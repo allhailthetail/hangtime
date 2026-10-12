@@ -16,6 +16,7 @@ hangtime-identity.workspace = true
 hangtime-proto.workspace = true
 hangtime-session.workspace = true
 hangtime-transport.workspace = true
+ratatui = { version = "0.30", default-features = false, features = ["crossterm"] }
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }

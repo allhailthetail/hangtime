@@ -36,6 +36,7 @@ mod parrot;
 mod ptt;
 mod radio;
 mod talk;
+mod ui;
 
 const USAGE: &str = "\
 usage:

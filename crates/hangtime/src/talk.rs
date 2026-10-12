@@ -20,7 +20,8 @@ use hangtime_transport::{Node, Peer};
 use tokio::runtime::Runtime;
 
 use crate::ptt::{self, Input};
-use crate::radio::{Members, Radio, describe};
+use crate::radio::{Members, Radio};
+use crate::ui;
 
 /// Everything a connection task needs.
 struct Shared {
@@ -58,15 +59,9 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
     let name = name.as_str();
     let me = node.fingerprint().radio_id();
     let port = node.local_addr()?.port();
-    println!("listening on port {port}");
 
     let (capture, mic) = Capture::open(microphone.as_deref())?;
     let (playback, speaker) = Playback::open(speaker_name.as_deref())?;
-    println!("microphone {}", capture.description());
-    println!("speaker {}", playback.description());
-    for notice in [capture.notice(), playback.notice()].into_iter().flatten() {
-        println!("note: {notice}");
-    }
     let members = Arc::new(Members::default());
     let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
@@ -90,10 +85,23 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         Arc::clone(&members),
         receiver.inbox(),
     );
-    println!("talkgroups:");
-    for (index, group) in radio.groups().iter().enumerate() {
-        println!("  {index}: {}", describe(group));
+    if let Some(level) = vox_sensitivity {
+        radio.set_vox_sensitivity(level);
     }
+
+    // The screen goes up before any peer can connect, so none is missed.
+    let fingerprint = node.fingerprint().to_string();
+    let screen = Screen::start(format!(
+        "Hangtime · {name} · port {port} · {}",
+        &fingerprint[..9]
+    ))?;
+    radio.publish();
+    ui::notice(&format!("microphone {}", capture.description()));
+    ui::notice(&format!("speaker {}", playback.description()));
+    for notice in [capture.notice(), playback.notice()].into_iter().flatten() {
+        ui::notice(&format!("note: {notice}"));
+    }
+
     runtime.spawn(Arc::clone(&radio).run_timers());
     let vox_radio = Arc::clone(&radio);
     runtime.spawn(async move {
@@ -124,13 +132,9 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         Ok(discovery) => {
             runtime.spawn(discover_loop(Arc::clone(&shared), discovery, fingerprint));
         }
-        Err(e) => println!("LAN discovery unavailable ({e}); use --peer"),
+        Err(e) => ui::notice(&format!("LAN discovery unavailable ({e}); use --peer")),
     }
 
-    ptt::set_status("[  ] All Call");
-    if let Some(level) = vox_sensitivity {
-        radio.set_vox_sensitivity(level);
-    }
     radio.set_vox(vox);
     ptt::run(|input| match input {
         Input::Ptt(keyed) => radio.ptt(keyed),
@@ -139,7 +143,30 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         Input::ToggleVox => radio.toggle_vox(),
         Input::VoxSensitivity(step) => radio.adjust_vox_sensitivity(step),
     })?;
+
+    // Close the audio devices first, so a Bluetooth headset goes back to
+    // its listening mode as soon as possible, then give back the terminal.
+    drop(capture);
+    drop(playback);
+    drop(screen);
     Ok(())
+}
+
+/// The full-screen UI for the life of talk mode. Dropping it, including
+/// on an early error return, gives the terminal back.
+struct Screen;
+
+impl Screen {
+    fn start(title: String) -> std::io::Result<Self> {
+        ui::start(title, true)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for Screen {
+    fn drop(&mut self) {
+        ui::stop();
+    }
 }
 
 async fn accept_loop(shared: Arc<Shared>) {
@@ -148,7 +175,7 @@ async fn accept_loop(shared: Arc<Shared>) {
             Ok(peer) => {
                 tokio::spawn(serve(Arc::clone(&shared), peer));
             }
-            Err(e) => ptt::notice(&format!("incoming connection failed: {e}")),
+            Err(e) => ui::notice(&format!("incoming connection failed: {e}")),
         }
     }
 }
@@ -194,7 +221,7 @@ async fn dial(shared: Arc<Shared>, addrs: Vec<SocketAddr>, expected: Option<Stri
         Ok(peer) => peer.close("unexpected identity"),
         // LAN nodes come and go; only report peers the user named.
         Err(e) if expected.is_none() => {
-            ptt::notice(&format!("could not reach {}: {e}", addrs[0]));
+            ui::notice(&format!("could not reach {}: {e}", addrs[0]));
         }
         Err(_) => {}
     }
@@ -207,7 +234,7 @@ async fn serve(shared: Arc<Shared>, peer: Peer) {
         peer.close("duplicate connection");
         return;
     }
-    ptt::notice(&format!(
+    ui::notice(&format!(
         "{} joined from {} [UNTRUSTED] {}",
         peer.display_name(),
         peer.remote_address(),
@@ -253,7 +280,7 @@ fn latency_reporter(
             jitter: stats.jitter,
             output: output.get() + stats.playout_queue,
         };
-        ptt::notice(&format!(
+        ui::notice(&format!(
             "{estimate}; lost {}/{} frames",
             stats.lost, stats.sent
         ));

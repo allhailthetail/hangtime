@@ -88,7 +88,9 @@ hangtime mic-test                 # calibrate VOX for your mic and room
 that device isn't available, Hangtime says so and uses the Windows
 default, then any other device that works.
 
-Hold SPACE to talk and press Q to quit. Press V for VOX, where talking
+Talk mode runs full-screen: status at the top, talkgroups and peers
+in the middle, a scrolling log, and the keys along the bottom. Hold
+SPACE to talk and press Q to quit. Press V for VOX, where talking
 keys the radio with no SPACE needed (a headset keeps the speaker from
 setting it off); + and - adjust how easily it keys. TAB or a number
 key changes the talkgroup you talk on; you always hear All Call too.

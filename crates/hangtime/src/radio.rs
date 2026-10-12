@@ -19,7 +19,7 @@ use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, Group, KeyUpO
 use hangtime_transport::{Fingerprint, Peer};
 use tokio::sync::Notify;
 
-use crate::ptt;
+use crate::ui::{self, Activity, GroupRow, PeerRow};
 
 /// A connected peer and the groups it has proven membership of.
 struct Member {
@@ -212,17 +212,19 @@ impl Radio {
         })
     }
 
-    /// The groups in selection order: All Call, then configured groups.
-    pub fn groups(&self) -> &[Group] {
-        &self.groups
-    }
-
     /// Registers a connected peer and joins the monitored groups with it.
     /// Returns false for a duplicate connection.
     pub fn add_peer(&self, peer: &Peer) -> bool {
         if !self.members.add(peer.clone()) {
             return false;
         }
+        let fingerprint = peer.fingerprint().to_string();
+        ui::add_peer(PeerRow {
+            radio_id: peer.radio_id(),
+            name: peer.display_name().to_string(),
+            address: peer.remote_address().to_string(),
+            fingerprint: fingerprint[..9].to_string(),
+        });
         let state = self.state.lock().unwrap();
         for group_id in state.floors.keys() {
             if let Some(group) = self.group(*group_id) {
@@ -254,12 +256,12 @@ impl Radio {
             // Don't leave a VOX transmission keyed with nothing to end it.
             self.key(false, true);
         }
-        ptt::notice(if on {
+        ui::notice(if on {
             "VOX on: talking keys the radio"
         } else {
             "VOX off"
         });
-        self.show(&self.state.lock().unwrap());
+        self.show_vox();
     }
 
     pub fn toggle_vox(&self) {
@@ -281,10 +283,10 @@ impl Radio {
             .saturating_add_signed(step);
         self.set_vox_sensitivity(level);
         let level = self.vox_sensitivity.load(Ordering::SeqCst);
-        ptt::notice(&format!(
+        ui::notice(&format!(
             "VOX sensitivity {level}/{VOX_SENSITIVITY_MAX} (put vox_sensitivity = {level} in hangtime.toml to keep it)"
         ));
-        self.show(&self.state.lock().unwrap());
+        self.show_vox();
     }
 
     /// Keys or unkeys. VOX key-ups send pre-roll, skip the talk-permit
@@ -320,7 +322,7 @@ impl Radio {
                 if !vox {
                     self.tones.tone(Tone::Bonk);
                 }
-                ptt::set_status(&format!("[--] {} busy{}", group.name, self.vox_marker()));
+                ui::set_status(Activity::Busy, &format!("BUSY  {}", group.name));
                 return;
             }
         } else if let Some(floor) = state.floors.get_mut(&group.id)
@@ -350,7 +352,7 @@ impl Radio {
             .values()
             .any(|floor| matches!(floor.state(), FloorState::Transmitting { .. }))
         {
-            ptt::notice("can't change talkgroup while transmitting");
+            ui::notice("can't change talkgroup while transmitting");
             return;
         }
         let old = &self.groups[state.selected];
@@ -368,7 +370,8 @@ impl Radio {
             );
         }
         state.selected = index;
-        ptt::notice(&format!("talkgroup {}: {}", index, describe(new)));
+        ui::set_selected(index);
+        ui::notice(&format!("talkgroup {}: {}", index, describe(new)));
         self.show(&state);
         self.deadline_changed.notify_one();
     }
@@ -395,7 +398,7 @@ impl Radio {
                 if group.accepts_join(proof.as_ref(), joiner.as_bytes(), self.me.as_bytes()) {
                     self.members.set_member(talker, group_id, true);
                 } else {
-                    ptt::notice(&format!(
+                    ui::notice(&format!(
                         "{} tried to join {} without the right key",
                         peer.display_name(),
                         group.name
@@ -420,7 +423,7 @@ impl Radio {
                 if floor.on_key_up(talker, transmission_id, now) == KeyUpOutcome::Preempted {
                     self.transmitter.key_down();
                     self.tones.tone(Tone::Bonk);
-                    ptt::notice("lost the floor to a simultaneous key-up");
+                    ui::notice("lost the floor to a simultaneous key-up");
                 }
             }
             ControlMessage::KeyDown {
@@ -466,6 +469,7 @@ impl Radio {
     /// A peer disconnected.
     pub fn on_peer_lost(&self, peer: &Peer) {
         self.members.remove(peer.radio_id());
+        ui::remove_peer(peer.radio_id());
         let mut state = self.state.lock().unwrap();
         let now = Instant::now();
         for floor in state.floors.values_mut() {
@@ -473,7 +477,7 @@ impl Radio {
         }
         self.show(&state);
         self.deadline_changed.notify_one();
-        ptt::notice(&format!("{} disconnected", peer.display_name()));
+        ui::notice(&format!("{} disconnected", peer.display_name()));
     }
 
     /// Runs floor timers (hang time, time-out). Sleeps with no deadline
@@ -515,7 +519,7 @@ impl Radio {
                         },
                     );
                     self.tones.tone(Tone::Bonk);
-                    ptt::notice("time-out: transmission ended");
+                    ui::notice("time-out: transmission ended");
                 }
                 Some(FloorEvent::HangEnded) => self.tones.tone(Tone::HangEnd),
                 Some(FloorEvent::TalkerDropped { .. }) | None => {}
@@ -531,38 +535,62 @@ impl Radio {
     fn show(&self, state: &State) {
         let selected = &self.groups[state.selected];
         let name_of = |id: u32| self.group(id).map_or("?", |group| group.name.as_str());
-        let mut text = None;
+        let mut shown = None;
         for (&group_id, floor) in &state.floors {
             match floor.state() {
                 FloorState::Transmitting { .. } => {
-                    text = Some(format!("[TX] {}", name_of(group_id)));
+                    shown = Some((Activity::Transmitting, format!("TX  {}", name_of(group_id))));
                 }
-                FloorState::Receiving { talker, .. } if text.is_none() => {
-                    text = Some(format!(
-                        "[RX] {} on {}",
-                        self.members.name_of(talker),
-                        name_of(group_id)
+                FloorState::Receiving { talker, .. } if shown.is_none() => {
+                    shown = Some((
+                        Activity::Receiving,
+                        format!(
+                            "RX  {} on {}",
+                            self.members.name_of(talker),
+                            name_of(group_id)
+                        ),
                     ));
                 }
                 _ => {}
             }
         }
-        let text = text.unwrap_or_else(|| match state.floors.get(&selected.id).map(Floor::state) {
-            Some(FloorState::Hang { .. }) => format!("[..] {} hang time", selected.name),
-            _ => format!("[  ] {}", selected.name),
-        });
-        ptt::set_status(&format!("{text}{}", self.vox_marker()));
+        let (activity, text) =
+            shown.unwrap_or_else(|| match state.floors.get(&selected.id).map(Floor::state) {
+                Some(FloorState::Hang { .. }) => {
+                    (Activity::Hang, format!("HANG  {}", selected.name))
+                }
+                _ => (Activity::Idle, format!("IDLE  {}", selected.name)),
+            });
+        ui::set_status(activity, &text);
     }
 
-    fn vox_marker(&self) -> String {
-        if self.vox.load(Ordering::SeqCst) {
-            format!(
-                "  (VOX {}/{VOX_SENSITIVITY_MAX})",
-                self.vox_sensitivity.load(Ordering::SeqCst)
-            )
-        } else {
-            String::new()
-        }
+    /// Pushes the whole radio state to the screen, once it is up.
+    pub fn publish(&self) {
+        let rows = self
+            .groups
+            .iter()
+            .map(|group| GroupRow {
+                name: group.name.clone(),
+                kind: match (group.id, &group.key) {
+                    (ALL_CALL, _) => "",
+                    (_, Some(_)) => "keyed",
+                    (_, None) => "open",
+                },
+                id: (group.id != ALL_CALL).then_some(group.id),
+            })
+            .collect();
+        let state = self.state.lock().unwrap();
+        ui::set_groups(rows, state.selected);
+        self.show_vox();
+        self.show(&state);
+    }
+
+    fn show_vox(&self) {
+        ui::set_vox(
+            self.vox
+                .load(Ordering::SeqCst)
+                .then(|| self.vox_sensitivity.load(Ordering::SeqCst)),
+        );
     }
 }
 
