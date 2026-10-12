@@ -4,7 +4,8 @@
 //! Scan list: the radio monitors every configured group, each with its
 //! own floor, and transmits on the selected one. Only the selected group
 //! and All Call are audible, one transmission at a time; activity on the
-//! other groups shows as a level bar and talker name.
+//! other groups shows as a level bar and talker name. A muted group is
+//! never audible, even when selected (ADR-0014).
 //!
 //! The last group is the built-in parrot ([`PARROT`]): local only, it
 //! plays each of your transmissions back to you.
@@ -153,6 +154,14 @@ struct State {
     floors: HashMap<u32, Floor>,
     /// Per group: the transmission being metered and its decoder.
     meters: HashMap<u32, ((u32, u16), VoiceDecoder)>,
+    muted: HashSet<u32>,
+}
+
+impl State {
+    /// Whether received voice on `group_id` would be played.
+    fn audible(&self, group_id: u32, selected: u32) -> bool {
+        (group_id == ALL_CALL || group_id == selected) && !self.muted.contains(&group_id)
+    }
 }
 
 pub struct Radio {
@@ -175,6 +184,7 @@ impl Radio {
     pub fn new(
         me: Fingerprint,
         configured: Vec<Group>,
+        muted: &[String],
         transmitter: Transmitter,
         members: Arc<Members>,
         tones: Inbox,
@@ -199,6 +209,15 @@ impl Radio {
             .iter()
             .map(|group| (group.id, Floor::new(me.radio_id(), FloorConfig::default())))
             .collect();
+        let muted = groups
+            .iter()
+            .filter(|group| {
+                muted
+                    .iter()
+                    .any(|name| name.eq_ignore_ascii_case(&group.name))
+            })
+            .map(|group| group.id)
+            .collect();
         Arc::new(Self {
             me,
             groups,
@@ -206,6 +225,7 @@ impl Radio {
                 selected: 0,
                 floors,
                 meters: HashMap::new(),
+                muted,
             }),
             members,
             transmitter,
@@ -303,11 +323,10 @@ impl Radio {
         let group = &self.groups[state.selected];
         if keyed {
             // Half duplex: no talking over a transmission you can hear.
-            // The selected group's own floor covers itself; All Call is the
-            // only other audible group.
-            let receiving_elsewhere = state.floors.iter().any(|(id, floor)| {
-                *id != group.id
-                    && *id == ALL_CALL
+            // The selected group's own floor covers itself.
+            let receiving_elsewhere = state.floors.iter().any(|(&id, floor)| {
+                id != group.id
+                    && state.audible(id, group.id)
                     && matches!(floor.state(), FloorState::Receiving { .. })
             });
             let id = self.next_transmission.fetch_add(1, Ordering::Relaxed);
@@ -372,6 +391,39 @@ impl Radio {
         ui::notice(&format!("talkgroup {}: {}", index, describe(new)));
         self.show(&state);
         self.deadline_changed.notify_one();
+    }
+
+    /// Mutes or unmutes the selected group.
+    pub fn toggle_mute(&self) {
+        let mut state = self.state.lock().unwrap();
+        let group = &self.groups[state.selected];
+        let muted = !state.muted.remove(&group.id);
+        if muted {
+            state.muted.insert(group.id);
+        }
+        let names: Vec<String> = self
+            .groups
+            .iter()
+            .filter(|group| state.muted.contains(&group.id))
+            .map(|group| format!("{:?}", group.name))
+            .collect();
+        ui::notice(&format!(
+            "{} {} (put muted = [{}] in hangtime.toml to keep it)",
+            group.name,
+            if muted { "muted" } else { "unmuted" },
+            names.join(", ")
+        ));
+        self.show_muted(&state);
+        self.show(&state);
+    }
+
+    fn show_muted(&self, state: &State) {
+        ui::set_muted(
+            self.groups
+                .iter()
+                .map(|group| state.muted.contains(&group.id))
+                .collect(),
+        );
     }
 
     /// Selects the next group, wrapping around.
@@ -472,10 +524,10 @@ impl Radio {
     fn hear(&self, header: &VoiceHeader, payload: &[u8]) -> bool {
         let mut state = self.state.lock().unwrap();
         let selected = self.groups[state.selected].id;
-        let audible = |id: u32| id == ALL_CALL || id == selected;
+        let audible = state.audible(header.group_id, selected);
         let busy_elsewhere = state.floors.iter().any(|(&id, floor)| {
             id != header.group_id
-                && audible(id)
+                && state.audible(id, selected)
                 && matches!(floor.state(), FloorState::Receiving { .. })
         });
         let Some(floor) = state.floors.get_mut(&header.group_id) else {
@@ -491,7 +543,7 @@ impl Radio {
             self.show(&state);
             self.deadline_changed.notify_one();
         }
-        accepted && audible(header.group_id) && !busy_elsewhere
+        accepted && audible && !busy_elsewhere
     }
 
     /// Decodes a frame just to measure its level for the group's bar.
@@ -608,7 +660,7 @@ impl Radio {
                     shown = Some((Activity::Transmitting, format!("TX  {}", name_of(group_id))));
                 }
                 FloorState::Receiving { talker, .. }
-                    if shown.is_none() && (group_id == ALL_CALL || group_id == selected.id) =>
+                    if shown.is_none() && state.audible(group_id, selected.id) =>
                 {
                     shown = Some((
                         Activity::Receiving,
@@ -663,6 +715,7 @@ impl Radio {
             .collect();
         let state = self.state.lock().unwrap();
         ui::set_groups(rows, state.selected);
+        self.show_muted(&state);
         self.show_vox();
         self.show(&state);
     }
@@ -687,4 +740,31 @@ pub fn describe(group: &Group) -> String {
     }
     let kind = if group.key.is_some() { "keyed" } else { "open" };
     format!("{} ({}, {kind})", group.name, group.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(muted: &[u32]) -> State {
+        State {
+            selected: 0,
+            floors: HashMap::new(),
+            meters: HashMap::new(),
+            muted: muted.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn hears_selected_group_and_all_call_unless_muted() {
+        let open = state(&[]);
+        assert!(open.audible(ALL_CALL, 100));
+        assert!(open.audible(100, 100));
+        assert!(!open.audible(200, 100));
+
+        let muted = state(&[ALL_CALL, 100]);
+        assert!(!muted.audible(ALL_CALL, 100));
+        assert!(!muted.audible(100, 100));
+        assert!(muted.audible(200, 200));
+    }
 }

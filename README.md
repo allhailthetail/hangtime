@@ -94,15 +94,18 @@ SPACE to talk and press Q to quit. Press V for VOX, where talking
 keys the radio with no SPACE needed (a headset keeps the speaker from
 setting it off); + and - adjust how easily it keys. TAB or a number
 key changes the talkgroup you talk on and hear; every group's row
-shows who is talking and a level bar, and you always hear All Call.
+shows who is talking and a level bar, and you also hear All Call.
+Press M to mute the selected group (All Call included): it still shows
+activity but never plays.
 The last group, Parrot, never leaves your machine: talk on it and it
 plays you back, to check your microphone, VOX, and speaker. Peers given
 with `--peer` are redialed if the connection drops.
 Hangtime listens on UDP port 4747 (or any free port if that is taken)
 and uses mDNS (UDP 5353) to find peers.
 
-Talkgroups, your display name, and VOX settings (`vox = true`,
-`vox_sensitivity = 3`) are set in `hangtime.toml` in your config
+Talkgroups, your display name, VOX settings (`vox = true`,
+`vox_sensitivity = 3`), and muted groups (`muted = ["All Call"]`)
+are set in `hangtime.toml` in your config
 folder (`%APPDATA%\hangtime` on Windows). A commented starter file is
 written on first run:
 

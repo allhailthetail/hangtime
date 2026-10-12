@@ -6,7 +6,7 @@ meaningful alternatives are recorded separately in
 
 ## Goals
 
-- DMR-style voice comms between computers: PTT, VOX, squelch,
+- DMR-style voice comms between computers: PTT, VOX, talkgroup mute,
   talkgroups, private calls, floor control, and hang time.
 - Serverless operation when peers share a network.
 - Optional server for off-net comms, acting like a repeater.
@@ -58,7 +58,7 @@ One binary with a core engine split into layers:
 | capture -> NS -> VOX/PTT   | Ed25519 keypair = radio ID |
 |   -> Opus encode           | group keys / server ACLs   |
 | Opus decode -> jitter buf  |                            |
-|   -> squelch -> mix -> out |                            |
+|   -> mute/select -> out    |                            |
 +----------------------------+----------------------------+
 | Transport: QUIC (quinn)                                 |
 |   datagrams = voice frames, streams = control           |
@@ -104,11 +104,10 @@ The binary runs in two roles:
    numbers and timestamps from the datagram header; Opus FEC and packet
    loss concealment fill gaps.
 1. **Decode:** Opus.
-1. **Squelch:** receive-side gate. Suppresses streams below a level
-   threshold and applies per-group mute and monitor settings.
 1. **Select:** plays one stream at a time from the selected group or
-   All Call. Other monitored groups are decoded only to drive level
-   bars.
+   All Call, skipping muted groups. Other monitored groups are decoded
+   only to drive level bars. There is no level-threshold squelch: peers
+   only send while keyed, already noise-suppressed (ADR-0014).
 1. **Tones:** talk-permit, channel busy (bonk), courtesy tone at end of
    transmission, hang-time end.
 
@@ -274,8 +273,8 @@ why the wire figure is about double the codec bitrate.
    ADR-0013.)
 1. **Groups and floor control:** mDNS discovery, talkgroups with group
    keys, floor arbitration, hang timer, time-out timer, tones.
-1. **VOX and squelch:** noise suppression, VAD with pre-roll and VOX
-   hang, receive gating, scan list.
+1. **VOX and scan list:** noise suppression, VAD with pre-roll and VOX
+   hang, scan list, per-group mute (in place of squelch, ADR-0014).
 1. **Tray app:** tray states, global hotkeys, UI, settings.
 1. **Off-net:** Tailscale peer discovery, then `--server` as repeater,
    rendezvous, relay, and directory.

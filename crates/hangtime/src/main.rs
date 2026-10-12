@@ -216,6 +216,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
                     peers,
                     name,
                     groups: config.groups,
+                    muted: config.muted,
                     vox: config.vox,
                     vox_sensitivity: config.vox_sensitivity,
                     microphone: args.mic.or(config.microphone),

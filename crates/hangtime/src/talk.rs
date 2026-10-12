@@ -47,6 +47,8 @@ pub struct Options {
     pub peers: Vec<SocketAddr>,
     pub name: String,
     pub groups: Vec<Group>,
+    /// Names of muted groups.
+    pub muted: Vec<String>,
     pub vox: bool,
     pub vox_sensitivity: Option<u8>,
     /// Preferred microphone and speaker names; `None` for the default.
@@ -59,6 +61,7 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         peers: static_peers,
         name,
         groups,
+        muted,
         vox,
         vox_sensitivity,
         microphone,
@@ -97,6 +100,7 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
     let radio = Radio::new(
         node.fingerprint(),
         groups,
+        &muted,
         transmitter,
         Arc::clone(&members),
         receiver.inbox(),
@@ -166,6 +170,7 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         Input::Next => radio.select_next(),
         Input::ToggleVox => radio.toggle_vox(),
         Input::VoxSensitivity(step) => radio.adjust_vox_sensitivity(step),
+        Input::ToggleMute => radio.toggle_mute(),
     })?;
 
     // Close the audio devices first, so a Bluetooth headset goes back to

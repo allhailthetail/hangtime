@@ -34,6 +34,10 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 # key the radio; raise it if speech is missed. Adjust live with + and -.
 # vox_sensitivity = 3
 
+# Talkgroups you don't want to hear, by name. Their activity still shows.
+# Toggle with M while running.
+# muted = ["All Call"]
+
 # Talkgroups. All Call (everyone) is always available as group 0 in the
 # app; groups below are numbered 1, 2, ... in the order listed.
 #
@@ -60,6 +64,8 @@ pub struct Config {
     pub speaker: Option<String>,
     /// Configured talkgroups, not including All Call.
     pub groups: Vec<Group>,
+    /// Names of muted groups, as written.
+    pub muted: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -73,6 +79,8 @@ struct File {
     speaker: Option<String>,
     #[serde(default, rename = "group")]
     groups: Vec<GroupEntry>,
+    #[serde(default)]
+    muted: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +143,16 @@ fn parse(text: &str) -> Result<Config, String> {
             key: entry.key,
         });
     }
+    for name in &file.muted {
+        let known = ["All Call", "Parrot"]
+            .iter()
+            .copied()
+            .chain(groups.iter().map(|group| group.name.as_str()))
+            .any(|group| group.eq_ignore_ascii_case(name));
+        if !known {
+            return Err(format!("muted: no talkgroup named {name:?}"));
+        }
+    }
     Ok(Config {
         name: file.name,
         vox: file.vox,
@@ -142,6 +160,7 @@ fn parse(text: &str) -> Result<Config, String> {
         microphone: file.microphone.filter(|name| !name.trim().is_empty()),
         speaker: file.speaker.filter(|name| !name.trim().is_empty()),
         groups,
+        muted: file.muted,
     })
 }
 
@@ -164,6 +183,7 @@ mod tests {
             vox = true
             vox_sensitivity = 2
             microphone = "WH-1000XM4"
+            muted = ["all call", "Lobby"]
             [[group]]
             name = "Ops"
             id = 100
@@ -182,6 +202,7 @@ mod tests {
         assert_eq!(config.groups.len(), 2);
         assert_eq!(config.groups[0].key.as_deref(), Some("secret"));
         assert_eq!(config.groups[1].key, None);
+        assert_eq!(config.muted, ["all call", "Lobby"]);
     }
 
     #[test]
@@ -195,6 +216,7 @@ mod tests {
             "[[group]]\nname = \"x\"\nid = 5\ncolour = \"red\"",
             "vox_sensitivity = 0",
             "vox_sensitivity = 6",
+            "muted = [\"Nowhere\"]",
         ];
         for text in bad {
             assert!(parse(text).is_err(), "accepted: {text}");

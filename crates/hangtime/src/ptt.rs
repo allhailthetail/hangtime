@@ -28,6 +28,8 @@ pub enum Input {
     ToggleVox,
     /// + or -: make VOX more or less sensitive.
     VoxSensitivity(i8),
+    /// M: mute or unmute the selected talkgroup.
+    ToggleMute,
 }
 
 /// Reads the keyboard until the user quits. Expects [`ui::start`] to have
@@ -77,6 +79,7 @@ fn event_loop(hold: bool, on_input: &mut impl FnMut(Input)) -> io::Result<()> {
                     on_input(Input::Select(c as usize - '0' as usize));
                 }
                 KeyCode::Char('v' | 'V') => on_input(Input::ToggleVox),
+                KeyCode::Char('m' | 'M') => on_input(Input::ToggleMute),
                 KeyCode::Char('+' | '=') => on_input(Input::VoxSensitivity(1)),
                 KeyCode::Char('-' | '_') => on_input(Input::VoxSensitivity(-1)),
                 _ => {}

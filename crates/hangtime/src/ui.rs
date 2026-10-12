@@ -101,6 +101,8 @@ struct State {
     hold_to_talk: bool,
     groups: Vec<GroupRow>,
     talkers: Vec<Option<String>>,
+    /// Per row: muted groups show activity but never play.
+    muted: Vec<bool>,
     meters: Vec<Meter>,
     mic: Meter,
     selected: usize,
@@ -119,6 +121,7 @@ impl State {
             hold_to_talk,
             groups: Vec::new(),
             talkers: Vec::new(),
+            muted: Vec::new(),
             meters: Vec::new(),
             mic: Meter::default(),
             selected: 0,
@@ -220,6 +223,7 @@ pub fn set_groups(groups: Vec<GroupRow>, selected: usize) {
         |state| {
             state.meters = vec![Meter::default(); groups.len()];
             state.talkers = vec![None; groups.len()];
+            state.muted = vec![false; groups.len()];
             state.groups = groups;
             state.selected = selected;
         },
@@ -229,6 +233,11 @@ pub fn set_groups(groups: Vec<GroupRow>, selected: usize) {
 
 pub fn set_selected(selected: usize) {
     update(|state| state.selected = selected, || {});
+}
+
+/// Which groups are muted, by row.
+pub fn set_muted(muted: Vec<bool>) {
+    update(|state| state.muted = muted, || {});
 }
 
 /// Who is talking on each group, by row.
@@ -426,7 +435,12 @@ fn render_groups(frame: &mut Frame<'_>, area: Rect, state: &State, now: Instant)
         match group.kind {
             "keyed" => spans.push(Span::styled(" keyed", Style::default().fg(Color::Yellow))),
             "open" => spans.push(Span::styled(" open", Style::default().fg(Color::Green))),
+            "echo" => spans.push(Span::styled(" echo", Style::default().fg(DIM))),
             _ => {}
+        }
+        let muted = state.muted.get(index).copied().unwrap_or(false);
+        if muted {
+            spans.push(Span::styled(" muted", Style::default().fg(Color::Red)));
         }
         if let Some(Some(talker)) = state.talkers.get(index) {
             spans.push(Span::styled(
@@ -438,7 +452,8 @@ fn render_groups(frame: &mut Frame<'_>, area: Rect, state: &State, now: Instant)
         }
         label_lines.push(Line::from(spans));
         let level = state.meters.get(index).map_or(BAR_MIN_DB, |m| m.shown(now));
-        bar_lines.push(bar(bars.width, level, None, Color::Green));
+        let colour = if muted { DIM } else { Color::Green };
+        bar_lines.push(bar(bars.width, level, None, colour));
     }
     if let Some((_, minimum)) = state.vox {
         label_lines.push(Line::from(vec![
@@ -559,6 +574,7 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, state: &State) {
         ("V", " VOX"),
         ("+/-", " sensitivity"),
         ("TAB/0-9", " group"),
+        ("M", " mute"),
         ("Q", " quit"),
     ];
     let mut spans = vec![Span::raw(" ")];
@@ -602,6 +618,7 @@ mod tests {
             },
         ];
         state.talkers = vec![None, Some("parrot".into()), Some("Alice".into())];
+        state.muted = vec![true, false, false];
         state.meters = vec![
             Meter::default(),
             Meter {
@@ -658,6 +675,7 @@ mod tests {
             "RX  parrot on Test",
             "VOX 3/5",
             "Talkgroups",
+            "0 All Call muted",
             "▶ 1 Test open  parrot",
             "Secure keyed  Alice",
             "MIC",
