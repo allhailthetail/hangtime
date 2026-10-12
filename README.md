@@ -154,4 +154,11 @@ Planned later: `hangtime --server` as a repeater, and a tray app.
 
 ## License
 
-To be decided.
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option. Unless you explicitly state otherwise, any contribution
+you submit for inclusion in Hangtime is dual licensed as above, without
+any additional terms or conditions.

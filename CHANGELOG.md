@@ -27,3 +27,4 @@ First release, for Windows x64 on a shared network.
   `%APPDATA%\hangtime` automatically.
 - Installer (`install.cmd`) for the current user: PATH, Start menu,
   optional firewall rule.
+- Licensed MIT OR Apache-2.0; third-party notices ship in the zip.

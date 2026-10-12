@@ -2,7 +2,10 @@
 
 Releases are a zip for Windows x64 holding `hangtime.exe` (static C
 runtime, no installer needed to run), `install.cmd` and `install.ps1`,
-a user README (from [QUICKSTART.md](QUICKSTART.md)), and the changelog.
+a user README (from [QUICKSTART.md](QUICKSTART.md)), the changelog,
+the licenses, and `THIRD-PARTY-NOTICES.txt` (generated from
+`cargo metadata`; it carries the libopus and RNNoise BSD notices that
+static linking requires).
 
 ## Steps
 
