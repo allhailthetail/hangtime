@@ -2,6 +2,7 @@
 //! authentication, and acceptance of any Ed25519 peer.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use hangtime_identity::{Fingerprint, Identity};
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -12,6 +13,12 @@ use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
 use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
 
 use crate::{ALPN, SERVER_NAME, TransportError};
+
+/// How often an idle connection is pinged.
+const KEEP_ALIVE: Duration = Duration::from_secs(5);
+
+/// How long a connection may go without hearing from the peer.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Builds the QUIC server and client configs for `identity`.
 pub(crate) fn configs(
@@ -40,13 +47,30 @@ pub(crate) fn configs(
         .with_client_auth_cert(vec![cert], key.into())?;
     client.alpn_protocols = vec![ALPN.to_vec()];
 
-    let server = quinn::ServerConfig::with_crypto(Arc::new(
+    let transport = Arc::new(transport_config());
+    let mut server = quinn::ServerConfig::with_crypto(Arc::new(
         QuicServerConfig::try_from(server).map_err(|e| TransportError::Config(e.to_string()))?,
     ));
-    let client = quinn::ClientConfig::new(Arc::new(
+    server.transport_config(Arc::clone(&transport));
+    let mut client = quinn::ClientConfig::new(Arc::new(
         QuicClientConfig::try_from(client).map_err(|e| TransportError::Config(e.to_string()))?,
     ));
+    client.transport_config(transport);
     Ok((server, client))
+}
+
+/// Radio links sit quiet for long stretches between transmissions, so
+/// both ends ping to keep an idle connection open. A peer that stops
+/// answering is dropped after the idle timeout.
+fn transport_config() -> quinn::TransportConfig {
+    let mut config = quinn::TransportConfig::default();
+    config.keep_alive_interval(Some(KEEP_ALIVE));
+    config.max_idle_timeout(Some(
+        IDLE_TIMEOUT
+            .try_into()
+            .expect("idle timeout fits a QUIC varint"),
+    ));
+    config
 }
 
 /// Fingerprint of the peer's identity, from its certificate.

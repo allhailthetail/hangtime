@@ -362,6 +362,16 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    /// Slow (35 s, past quinn's default 30 s idle timeout): run with `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn idle_connection_stays_open() {
+        let (_listener, _dialer, accepted, connected) = pair().await;
+        tokio::time::sleep(Duration::from_secs(35)).await;
+        connected.send_voice(b"still here".to_vec()).unwrap();
+        assert_eq!(&accepted.recv_voice().await.unwrap()[..], b"still here");
+    }
+
     #[tokio::test]
     async fn carries_control_messages_both_ways() {
         let (_listener, _dialer, accepted, connected) = pair().await;
