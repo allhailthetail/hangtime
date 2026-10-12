@@ -23,9 +23,9 @@ speech.
 ## Decision
 
 Run RNNoise on every transmit frame. A frame counts as voice when its
-speech probability reaches a threshold and its level is clearly above
-the room's noise floor. VOX keys after a run of voice frames and
-unkeys after 25 quiet frames (500 ms hang).
+speech probability reaches a threshold, its level is clearly above the
+room's noise floor, and its level reaches a minimum. VOX keys after a
+run of voice frames and unkeys after 25 quiet frames (500 ms hang).
 
 The loudness check is what rejects taps. Measured on RNNoise, a table
 tap is loud for one 20 ms frame, but the speech estimate jumps on it
@@ -33,18 +33,27 @@ and stays raised for about 200 ms. Speech stays loud for many frames.
 The noise floor drops at once to any quieter frame and rises 2.5 dB/s,
 so it follows the room and learns a new steady noise such as a fan.
 
+The minimum level is what rejects other people talking nearby. Their
+speech is real speech, so RNNoise rates it as such, but at the mic it
+is much quieter than the wearer's own voice. Headsets that gate their
+background to digital silence (the WH-1000XM4 reads about -100 dBFS
+between sounds) make the noise floor check pass for any sound, so the
+minimum carries them.
+
 Sensitivity has five levels:
 
-| Level | Probability | Run | Above floor |
-| --- | --- | --- | --- |
-| 1 (least) | 0.90 | 100 ms | 15 dB |
-| 2 | 0.85 | 80 ms | 12 dB |
-| 3 (default) | 0.75 | 60 ms | 10 dB |
-| 4 | 0.60 | 60 ms | 8 dB |
-| 5 (most) | 0.50 | 40 ms | 6 dB |
+| Level | Probability | Run | Above floor | Minimum |
+| --- | --- | --- | --- | --- |
+| 1 (least) | 0.90 | 100 ms | 15 dB | -24 dBFS |
+| 2 | 0.85 | 80 ms | 12 dB | -30 dBFS |
+| 3 (default) | 0.75 | 60 ms | 10 dB | -36 dBFS |
+| 4 | 0.60 | 60 ms | 8 dB | -42 dBFS |
+| 5 (most) | 0.50 | 40 ms | 6 dB | -48 dBFS |
 
 Users adjust the level live with + and -, or set `vox_sensitivity` in
-`hangtime.toml`.
+`hangtime.toml`. `hangtime mic-test` calibrates: it records 5 s of the
+room and 5 s of the user talking, and recommends the level whose
+minimum sits closest to halfway between the two.
 
 On a VOX key-up, send the last 5 cleaned frames (100 ms of pre-roll)
 first. VOX key-ups follow the same floor rules as PTT but skip the
@@ -63,5 +72,8 @@ talk-permit chirp and are refused silently on a busy channel.
 - Table taps set off the first version (speech probability only, 40 ms
   at 0.5), and requiring longer runs alone did not help because the
   estimate lingers after a tap. The loudness check addresses that.
+- In office testing with a WH-1000XM4, colleagues talking in another
+  room keyed VOX at level 3 before the minimum level existed. On that
+  recording, levels 1 to 4 now never key; level 5 still does.
 - Speakers can set off VOX; a headset avoids it. The floor refuses VOX
   while receiving, which limits echo loops.

@@ -24,7 +24,9 @@ pub use pipeline::{Inbox, PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitt
 pub use probe::{FrameReport, VoxProbe};
 pub use resample::Resampler;
 pub use tones::Tone;
-pub use vox::{VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, VoxEvent};
+pub use vox::{
+    VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, VoxEvent, min_level_db,
+};
 
 /// Internal sample rate.
 pub const SAMPLE_RATE: u32 = 48_000;

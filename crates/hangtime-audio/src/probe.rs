@@ -129,5 +129,13 @@ mod wav_analysis {
                 speech
             );
         }
+        for sensitivity in crate::vox::VOX_SENSITIVITY_MIN..=crate::vox::VOX_SENSITIVITY_MAX {
+            let keys = VoxProbe::new(sensitivity)
+                .push(&audio)
+                .iter()
+                .filter(|r| r.event == Some(VoxEvent::Start))
+                .count();
+            println!("  level {sensitivity}: VOX keys {keys} times");
+        }
     }
 }

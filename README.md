@@ -80,7 +80,7 @@ hangtime parrot                   # echo node for testing alone
 hangtime parrot --lan             # echo node, discoverable on the LAN
 hangtime devices                  # list microphones and speakers
 hangtime --mic "WH-1000XM4"       # use a specific microphone
-hangtime mic-test                 # see what VOX hears from your mic
+hangtime mic-test                 # calibrate VOX for your mic and room
 ```
 
 `--mic` and `--speaker` (or `microphone` and `speaker` in

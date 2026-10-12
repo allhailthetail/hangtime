@@ -1,12 +1,19 @@
 //! Voice-operated transmit: decides when to key and unkey from each
 //! frame's speech probability and loudness.
 //!
-//! A frame counts as voice only when RNNoise's speech probability reaches
-//! the threshold *and* the frame is clearly louder than the room's noise
-//! floor. The loudness check matters: RNNoise's estimate lingers for
-//! 200 ms or more after a tap or click, but the tap itself is loud for a
-//! single frame, while speech stays loud. VOX keys only after a run of
-//! voice frames; pre-roll covers the audio before keying.
+//! A frame counts as voice only when all of these hold:
+//!
+//! - RNNoise's speech probability reaches the threshold.
+//! - The frame is clearly louder than the room's noise floor. RNNoise's
+//!   estimate lingers for 200 ms or more after a tap, but the tap itself
+//!   is loud for a single frame, while speech stays loud.
+//! - The frame reaches a minimum level. Other people talking nearby are
+//!   real speech, but much quieter at the mic than the wearer's own
+//!   voice. Headsets that gate their background to silence also make the
+//!   noise floor check pass for any sound, so this check carries them.
+//!
+//! VOX keys only after a run of voice frames; pre-roll covers the audio
+//! before keying.
 
 /// Least and most sensitive levels.
 pub const VOX_SENSITIVITY_MIN: u8 = 1;
@@ -34,6 +41,8 @@ struct Level {
     attack_frames: u32,
     /// How far above the noise floor a frame must be, in dB.
     margin_db: f32,
+    /// The quietest frame that can count as voice, in dBFS.
+    min_db: f32,
 }
 
 const LEVELS: [Level; 5] = [
@@ -41,28 +50,39 @@ const LEVELS: [Level; 5] = [
         threshold: 0.90,
         attack_frames: 5,
         margin_db: 15.0,
+        min_db: -24.0,
     },
     Level {
         threshold: 0.85,
         attack_frames: 4,
         margin_db: 12.0,
+        min_db: -30.0,
     },
     Level {
         threshold: 0.75,
         attack_frames: 3,
         margin_db: 10.0,
+        min_db: -36.0,
     },
     Level {
         threshold: 0.60,
         attack_frames: 3,
         margin_db: 8.0,
+        min_db: -42.0,
     },
     Level {
         threshold: 0.50,
         attack_frames: 2,
         margin_db: 6.0,
+        min_db: -48.0,
     },
 ];
+
+/// The quietest frame, in dBFS, that counts as voice at `sensitivity`.
+pub fn min_level_db(sensitivity: u8) -> f32 {
+    let level = sensitivity.clamp(VOX_SENSITIVITY_MIN, VOX_SENSITIVITY_MAX);
+    LEVELS[usize::from(level - VOX_SENSITIVITY_MIN)].min_db
+}
 
 /// A VOX decision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,7 +134,7 @@ impl Vox {
     pub fn push(&mut self, speech: f32, level_db: f32) -> Option<VoxEvent> {
         let level = &LEVELS[self.level];
         let floor = self.floor_db.map_or(level_db, |floor| floor.min(level_db));
-        let loud = level_db >= floor + level.margin_db;
+        let loud = level_db >= floor + level.margin_db && level_db >= level.min_db;
         self.floor_db = Some(floor + FLOOR_RISE_DB);
 
         if speech >= level.threshold && loud {
@@ -161,7 +181,8 @@ mod tests {
     use super::*;
 
     const ROOM: f32 = -60.0;
-    const VOICE: f32 = -30.0;
+    /// The wearer's own voice at a headset mic.
+    const VOICE: f32 = -20.0;
 
     fn feed(vox: &mut Vox, speech: f32, level_db: f32, frames: u32) -> Vec<VoxEvent> {
         (0..frames)
@@ -213,6 +234,27 @@ mod tests {
     }
 
     #[test]
+    fn quiet_distant_speech_does_not_key() {
+        // Colleagues in another room, measured through a headset mic:
+        // real speech, around -45 dBFS.
+        let mut vox = settled(VOX_SENSITIVITY_DEFAULT);
+        assert_eq!(feed(&mut vox, 1.0, -45.0, 100), []);
+        // The most sensitive level does hear it.
+        let mut vox = settled(VOX_SENSITIVITY_MAX);
+        assert_eq!(feed(&mut vox, 1.0, -45.0, 2), [VoxEvent::Start]);
+    }
+
+    #[test]
+    fn gated_silence_does_not_lower_the_bar() {
+        // A headset that gates background to digital silence: the floor
+        // drops to -100 dB, so only the minimum level stops quiet speech.
+        let mut vox = Vox::default();
+        feed(&mut vox, 0.0, -100.0, 50);
+        assert_eq!(feed(&mut vox, 1.0, -50.0, 50), []);
+        assert_eq!(feed(&mut vox, 1.0, VOICE, 3), [VoxEvent::Start]);
+    }
+
+    #[test]
     fn learns_a_new_steady_noise() {
         let mut vox = settled(VOX_SENSITIVITY_DEFAULT);
         // A fan comes on 20 dB above the room. Within a few seconds the
@@ -257,6 +299,13 @@ mod tests {
             .max()
             .unwrap();
         assert!(longest as usize <= crate::pipeline::PREROLL_FRAMES);
+    }
+
+    #[test]
+    fn minimum_levels_step_by_six_db() {
+        assert_eq!(min_level_db(1), -24.0);
+        assert_eq!(min_level_db(VOX_SENSITIVITY_DEFAULT), -36.0);
+        assert_eq!(min_level_db(9), -48.0);
     }
 
     #[test]
