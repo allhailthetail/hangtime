@@ -24,7 +24,7 @@ impl Default for FloorConfig {
     fn default() -> Self {
         Self {
             collision_window: Duration::from_millis(150),
-            hang_time: Duration::from_secs(3),
+            hang_time: Duration::from_millis(1500),
             time_out: Duration::from_secs(120),
         }
     }

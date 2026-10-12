@@ -30,9 +30,11 @@ connection. Bump the protocol to `hangtime/2`.
 - `FLOOR_STATE` is dropped: a node that joins mid-transmission takes the
   floor holder from the voice datagrams.
 
-Floor rules: lower radio ID wins key-ups within 150 ms; 3 s hang time
+Floor rules: lower radio ID wins key-ups within 150 ms; 1.5 s hang time
 reserved for the exchange's participants; 120 s time-out enforced by
-the talker, with receivers dropping a stuck talker 5 s later.
+the talker, with receivers dropping a stuck talker 5 s later. Hang time
+started at 3 s and was halved after two-machine testing, where 3 s felt
+slow to hand the channel back.
 
 ## Consequences
 
