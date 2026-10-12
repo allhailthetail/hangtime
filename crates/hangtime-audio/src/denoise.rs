@@ -80,3 +80,48 @@ mod tests {
         assert!(speech < 0.5, "noise scored as speech: {speech}");
     }
 }
+
+/// Runs a synthetic table tap through real RNNoise and VOX. RNNoise's
+/// speech estimate jumps on the tap and lingers for about 200 ms after
+/// it; VOX must not key on it at any sensitivity.
+#[cfg(test)]
+mod tap_tests {
+    use super::*;
+    use crate::vox::{VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, Vox, level_db};
+
+    #[test]
+    fn table_tap_does_not_key_vox() {
+        for sensitivity in VOX_SENSITIVITY_MIN..=VOX_SENSITIVITY_MAX {
+            let mut denoiser = Denoiser::default();
+            let mut vox = Vox::new(sensitivity);
+            let mut seed = 7u32;
+            let mut noise = || {
+                seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (seed >> 8) as f32 / (1 << 24) as f32 - 0.5
+            };
+            // Two seconds of quiet room with a tap every half second: a
+            // sharp, decaying knock about 15 ms long.
+            for i in 0..100 {
+                let tap_frame = i >= 25 && i % 25 == 0;
+                let mut frame: [f32; FRAME_SAMPLES] = std::array::from_fn(|n| {
+                    let room = noise() * 0.003;
+                    let t = n as f32 / 48_000.0;
+                    let tap = if tap_frame {
+                        (t * 900.0 * std::f32::consts::TAU).sin() * 0.6 * (-t / 0.004).exp()
+                            + noise() * 0.5 * (-t / 0.002).exp()
+                    } else {
+                        0.0
+                    };
+                    room + tap
+                });
+                let level = level_db(&frame);
+                let speech = denoiser.process(&mut frame);
+                assert_eq!(
+                    vox.push(speech, level),
+                    None,
+                    "keyed at level {sensitivity}"
+                );
+            }
+        }
+    }
+}

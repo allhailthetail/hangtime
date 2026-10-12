@@ -22,14 +22,29 @@ speech.
 
 ## Decision
 
-Run RNNoise on every transmit frame and use its speech probability for
-VOX: key after a run of frames at or above a threshold, unkey after 25
-quiet frames (500 ms hang). Sensitivity has five levels, from 0.95 for
-100 ms (least sensitive) to 0.50 for 40 ms (most); the default, level
-3, is 0.80 for 60 ms. Requiring a run rejects transients: a tap or
-click can briefly score as speech, but a syllable lasts well over
-100 ms. Users adjust the level live with + and -, or set
-`vox_sensitivity` in `hangtime.toml`.
+Run RNNoise on every transmit frame. A frame counts as voice when its
+speech probability reaches a threshold and its level is clearly above
+the room's noise floor. VOX keys after a run of voice frames and
+unkeys after 25 quiet frames (500 ms hang).
+
+The loudness check is what rejects taps. Measured on RNNoise, a table
+tap is loud for one 20 ms frame, but the speech estimate jumps on it
+and stays raised for about 200 ms. Speech stays loud for many frames.
+The noise floor drops at once to any quieter frame and rises 2.5 dB/s,
+so it follows the room and learns a new steady noise such as a fan.
+
+Sensitivity has five levels:
+
+| Level | Probability | Run | Above floor |
+| --- | --- | --- | --- |
+| 1 (least) | 0.90 | 100 ms | 15 dB |
+| 2 | 0.85 | 80 ms | 12 dB |
+| 3 (default) | 0.75 | 60 ms | 10 dB |
+| 4 | 0.60 | 60 ms | 8 dB |
+| 5 (most) | 0.50 | 40 ms | 6 dB |
+
+Users adjust the level live with + and -, or set `vox_sensitivity` in
+`hangtime.toml`.
 
 On a VOX key-up, send the last 5 cleaned frames (100 ms of pre-roll)
 first. VOX key-ups follow the same floor rules as PTT but skip the
@@ -45,7 +60,8 @@ talk-permit chirp and are refused silently on a busy channel.
   stays that much deeper. PTT transmissions have no pre-roll.
 - With VOX on, the transmit thread runs continuously (RNNoise on every
   frame) instead of sleeping between transmissions.
-- The first version keyed after 40 ms at 0.5 and was set off by table
-  taps in testing; that is now level 5.
+- Table taps set off the first version (speech probability only, 40 ms
+  at 0.5), and requiring longer runs alone did not help because the
+  estimate lingers after a tap. The loudness check addresses that.
 - Speakers can set off VOX; a headset avoids it. The floor refuses VOX
   while receiving, which limits echo loops.

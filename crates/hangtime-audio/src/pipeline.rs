@@ -16,7 +16,7 @@ use crate::denoise::Denoiser;
 use crate::jitter::{JitterBuffer, Playout};
 use crate::resample::Resampler;
 use crate::tones::Tone;
-use crate::vox::{VOX_SENSITIVITY_DEFAULT, Vox, VoxEvent};
+use crate::vox::{self, VOX_SENSITIVITY_DEFAULT, Vox, VoxEvent};
 use crate::{AudioError, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 
 /// How often the transmit thread drains the capture ring while active.
@@ -197,11 +197,12 @@ impl TxWorker {
             let mut frames = pending.chunks_exact(FRAME_SAMPLES);
             for frame in &mut frames {
                 let mut frame: [f32; FRAME_SAMPLES] = frame.try_into().expect("exact chunk");
+                let level = vox::level_db(&frame);
                 let speech = self.denoiser.process(&mut frame);
                 self.vox
                     .set_sensitivity(self.shared.vox_sensitivity.load(Ordering::Relaxed));
                 if self.shared.vox.load(Ordering::SeqCst)
-                    && let Some(event) = self.vox.push(speech)
+                    && let Some(event) = self.vox.push(speech, level)
                 {
                     (self.on_vox)(event);
                 }
