@@ -13,8 +13,9 @@ crossterm = "0.29"
 hangtime-audio.workspace = true
 hangtime-identity.workspace = true
 hangtime-proto.workspace = true
+hangtime-session.workspace = true
 hangtime-transport.workspace = true
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt"] }

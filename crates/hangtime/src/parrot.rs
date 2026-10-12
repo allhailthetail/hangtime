@@ -1,12 +1,13 @@
 //! Parrot: a headless node that plays each transmission back to its
 //! sender, like a DMR parrot talkgroup. It forwards Opus frames without
-//! decoding, so it needs no audio devices.
+//! decoding, so it needs no audio devices. Each replay is a normal
+//! transmission: `KEYUP`, voice, `KEYDOWN`.
 
 use std::error::Error;
 use std::time::Duration;
 
 use bytes::Bytes;
-use hangtime_proto::{FRAME_DURATION, VoiceHeader};
+use hangtime_proto::{ALL_CALL, ControlMessage, FRAME_DURATION, VoiceHeader};
 use hangtime_transport::{Node, Peer};
 use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until};
@@ -24,7 +25,8 @@ pub async fn run(node: &Node) -> Result<(), Box<dyn Error>> {
         match accepted {
             Ok(peer) => {
                 println!(
-                    "{} connected [UNTRUSTED] fingerprint {}",
+                    "{} at {} connected [UNTRUSTED] fingerprint {}",
+                    peer.display_name(),
                     peer.remote_address(),
                     peer.fingerprint()
                 );
@@ -46,6 +48,14 @@ struct Recording {
 /// Records each transmission from `peer` and replays it after it ends.
 /// Replays are queued so they never overlap: one talker per channel.
 async fn echo(peer: Peer, parrot_id: u32) {
+    let _ = peer.send_control(&ControlMessage::Join {
+        group_id: ALL_CALL,
+        proof: None,
+    });
+    // The parrot keeps no floor state; read and drop control messages so
+    // the peer's control stream never backs up.
+    let control_peer = peer.clone();
+    tokio::spawn(async move { while control_peer.recv_control().await.is_ok() {} });
     let (queue, mut recordings) = mpsc::unbounded_channel::<Recording>();
     let replay_peer = peer.clone();
     tokio::spawn(async move {
@@ -98,6 +108,16 @@ async fn replay(peer: &Peer, recording: Recording, parrot_id: u32) -> bool {
     } = recording;
     sleep(REPLAY_DELAY).await;
     frames.sort_by_key(|(header, _)| header.timestamp);
+    let group_id = end.group_id;
+    if peer
+        .send_control(&ControlMessage::KeyUp {
+            group_id,
+            transmission_id,
+        })
+        .is_err()
+    {
+        return false;
+    }
     let start = Instant::now();
     let mut sequence: u16 = 0;
     for (header, payload) in frames {
@@ -123,6 +143,12 @@ async fn replay(peer: &Peer, recording: Recording, parrot_id: u32) -> bool {
         ..end
     };
     peer.send_voice(end.encode().to_vec()).is_ok()
+        && peer
+            .send_control(&ControlMessage::KeyDown {
+                group_id,
+                transmission_id,
+            })
+            .is_ok()
 }
 
 #[cfg(test)]
@@ -140,8 +166,8 @@ mod tests {
     #[tokio::test]
     async fn echoes_transmission_as_its_own() {
         let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let parrot = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
-        let client = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
         let parrot_id = parrot.fingerprint().radio_id();
         tokio::spawn(async move { run(&parrot).await.unwrap() });
@@ -189,8 +215,8 @@ mod tests {
     #[tokio::test]
     async fn queues_replays_without_overlap() {
         let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let parrot = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
-        let client = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
         tokio::spawn(async move { run(&parrot).await.unwrap() });
         let peer = client.connect(parrot_addr).await.unwrap();

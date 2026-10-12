@@ -427,6 +427,7 @@ dependencies = [
  "hangtime-audio",
  "hangtime-identity",
  "hangtime-proto",
+ "hangtime-session",
  "hangtime-transport",
  "tokio",
 ]
@@ -451,6 +452,10 @@ dependencies = [
 
 [[package]]
 name = "hangtime-proto"
+version = "0.1.0"
+
+[[package]]
+name = "hangtime-session"
 version = "0.1.0"
 
 [[package]]

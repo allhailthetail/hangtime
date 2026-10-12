@@ -159,14 +159,15 @@ The wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 Peer-to-peer mode has no repeater to grant the floor, so arbitration is
 distributed:
 
-1. The talker sends `KEYUP {group, radio_id, timestamp}` to all peers
-   in the group on the control stream.
-1. If two key-ups collide within the propagation window (tens of ms),
-   a deterministic tiebreak decides; for example, the lower radio ID
-   wins. The loser hears the bonk tone and stops transmitting.
+1. The talker sends `KEYUP {group, transmission}` to all peers in the
+   group on the control stream.
+1. If two key-ups collide within 150 ms, the lower radio ID wins. The
+   loser hears the bonk tone and stops transmitting.
 1. `KEYDOWN` ends the transmission and starts the hang timer.
-1. Peers joining a group mid-transmission learn the current floor
-   state through a state sync message.
+1. Peers joining a group mid-transmission take the floor holder from
+   the voice itself; there is no separate state sync message.
+
+The exact rules are in [PROTOCOL.md](PROTOCOL.md#floor-arbitration).
 
 In server mode, the server is the arbiter, exactly as a repeater is.
 The message types are the same in both modes.

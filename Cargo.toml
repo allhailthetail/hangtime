@@ -13,4 +13,5 @@ publish = false
 hangtime-audio = { path = "crates/hangtime-audio" }
 hangtime-identity = { path = "crates/hangtime-identity" }
 hangtime-proto = { path = "crates/hangtime-proto" }
+hangtime-session = { path = "crates/hangtime-session" }
 hangtime-transport = { path = "crates/hangtime-transport" }

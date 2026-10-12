@@ -1,7 +1,8 @@
 # Hangtime wire protocol
 
-> **Status:** draft skeleton. Nothing here is final. Fill in each
-> section before implementing the code that depends on it.
+> **Status:** draft. Protocol version `hangtime/2`. Sections marked
+> TODO are not designed yet; fill them in before implementing the code
+> that depends on them.
 
 This document is the single source of truth for everything that goes
 on the wire. Client and server code must match it.
@@ -21,7 +22,7 @@ on the wire. Client and server code must match it.
 Rationale is in
 [ADR-0007](decisions/0007-phase-1-connection-setup.md).
 
-- **ALPN:** `hangtime/1`. The suffix is the protocol major version, so
+- **ALPN:** `hangtime/2`. The suffix is the protocol major version, so
   version negotiation is ALPN negotiation: a node that speaks several
   major versions offers each, and peers with no version in common fail
   the handshake.
@@ -35,10 +36,12 @@ Rationale is in
 - **Trust:** any identity is accepted. Nodes show a peer as untrusted
   until the user confirms its fingerprint.
 - **Datagrams:** both sides enable QUIC datagrams (RFC 9221).
-
-TODO: the `HELLO` exchange (radio ID, capabilities, display name) and
-control stream framing, designed together with the other control
-messages in phase 2.
+- **Control stream:** the dialing side opens one bidirectional stream
+  and sends `HELLO`; the accepting side replies with `HELLO`. Both
+  sides send all later control messages on this stream. A peer whose
+  first message is not a `HELLO`, or whose `HELLO` radio ID does not
+  match its identity key, is disconnected. `HELLO` must complete within
+  5 seconds.
 
 ## Voice datagram
 
@@ -73,22 +76,67 @@ Rules:
 
 ## Control messages
 
-TODO: encoding and fields for each message. Initial set:
+Rationale is in [ADR-0010](decisions/0010-control-stream-and-floor.md).
+Each message is a frame:
 
-- `HELLO`: identity, version, capabilities
-- `PRESENCE`: online, monitored groups, selected group
-- `KEYUP`: request the floor for a group
-- `KEYDOWN`: release the floor; starts hang time
-- `FLOOR_GRANT` / `FLOOR_DENY`: server mode, or collision resolution
-- `FLOOR_STATE`: state sync for peers joining mid-transmission
-- `JOIN` / `LEAVE`: group membership
-- `PING` / `PONG`: keepalive and latency measurement
+| Size | Field |
+| --- | --- |
+| 2 | Message type |
+| 2 | Body length in bytes |
+| length | Body |
 
-## Floor arbitration state machine
+Receivers skip frames with unknown types, and ignore body bytes after
+the fields they know, so minor versions can add messages and append
+fields. Text is a 1-byte length followed by UTF-8.
 
-TODO: states (idle, transmitting, receiving, hang time, denied),
-transitions, the collision window, the tiebreak rule, and time-out
-timer behavior, for both peer-to-peer and server modes.
+| Type | Message | Body |
+| --- | --- | --- |
+| `0x0001` | `HELLO` | minor version (2), radio ID (4), capabilities (4), name |
+| `0x0010` | `JOIN` | group ID (4), proof length (1: 0 or 32), proof |
+| `0x0011` | `LEAVE` | group ID (4) |
+| `0x0020` | `KEYUP` | group ID (4), transmission ID (2) |
+| `0x0021` | `KEYDOWN` | group ID (4), transmission ID (2) |
+| `0x0023` | `FLOOR_GRANT` | reserved for server mode |
+| `0x0024` | `FLOOR_DENY` | reserved for server mode |
+
+- **`HELLO`:** minor version is `0`; no capability bits are defined.
+  The name is text of at most 32 bytes.
+  The display name is not verified.
+- **`JOIN` / `LEAVE`:** a node only sends a group's voice to peers that
+  have joined it. Scoped groups carry the membership proof from
+  [ADR-0009](decisions/0009-group-keys-prove-membership.md); open groups
+  and All Call send proof length 0.
+- **`KEYUP` / `KEYDOWN`:** bracket each transmission. The transmission
+  ID matches the voice datagrams'.
+- **Group IDs:** `0xFFFFFFFF` is All Call. `0` is reserved.
+
+## Floor arbitration
+
+Every node runs the same rules for each group, so peer-to-peer nodes
+agree without a coordinator. Server mode (phase 5) makes the server the
+arbiter using the reserved grant and deny messages.
+
+States: **idle**, **transmitting** (this node), **receiving** (a peer),
+**hang time**.
+
+- **Local key-up:** allowed when idle, or during hang time if this node
+  took part in the exchange. Otherwise refused with the bonk tone and
+  nothing is sent. When allowed, send `KEYUP`, then voice.
+- **Remote `KEYUP`:** taken when idle or in hang time. If the floor was
+  taken less than **150 ms** ago (measured at this node), the lower
+  radio ID wins; a node that loses while transmitting stops and plays
+  the bonk tone. Later key-ups are ignored.
+- **Voice without `KEYUP`:** voice on a free channel takes the floor,
+  so a node that joins mid-transmission still hears it. Voice from
+  anyone but the floor holder is dropped.
+- **`KEYDOWN`:** starts **hang time (3 s)**. During hang time only
+  nodes that transmitted in the current exchange may key. An exchange
+  is a run of transmissions less than the hang time apart.
+- **Time-out timer (120 s):** the talker's node ends the transmission
+  and sends `KEYDOWN`. Receivers drop a talker that exceeds the
+  time-out by 5 s without a `KEYDOWN`.
+- **Disconnect:** a peer that disconnects while holding the floor
+  releases it.
 
 ## Discovery
 

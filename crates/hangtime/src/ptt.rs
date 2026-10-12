@@ -5,7 +5,7 @@
 //! SPACE toggles transmit instead.
 
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
@@ -13,11 +13,15 @@ use crossterm::event::{
 };
 use crossterm::{execute, terminal};
 
-/// What the status line currently shows: true while transmitting.
-static KEYED: AtomicBool = AtomicBool::new(false);
+/// Width the status line is padded to, so shorter text clears longer.
+const STATUS_WIDTH: usize = 40;
 
-/// Runs the PTT loop until the user quits. Calls `set_ptt` on each change.
-pub fn run(mut set_ptt: impl FnMut(bool)) -> io::Result<()> {
+/// Text on the status line, redrawn after each notice.
+static STATUS: Mutex<String> = Mutex::new(String::new());
+
+/// Runs the PTT loop until the user quits. Calls `on_ptt` each time the
+/// key goes down or up.
+pub fn run(mut on_ptt: impl FnMut(bool)) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let enhanced = !cfg!(windows) && terminal::supports_keyboard_enhancement().unwrap_or(false);
     if enhanced {
@@ -27,7 +31,7 @@ pub fn run(mut set_ptt: impl FnMut(bool)) -> io::Result<()> {
         )?;
     }
     let hold = cfg!(windows) || enhanced;
-    let result = event_loop(hold, &mut set_ptt);
+    let result = event_loop(hold, &mut on_ptt);
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
@@ -39,17 +43,31 @@ pub fn run(mut set_ptt: impl FnMut(bool)) -> io::Result<()> {
 /// Prints a line in place of the status line, then redraws the status
 /// line below it. Safe in raw mode.
 pub fn notice(message: &str) {
-    print!("\r{message:<20}\r\n");
-    let _ = show(KEYED.load(Ordering::Relaxed));
+    print!("\r{message:<STATUS_WIDTH$}\r\n");
+    redraw();
 }
 
-fn event_loop(hold: bool, set_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
+/// Replaces the status line.
+pub fn set_status(text: &str) {
+    if let Ok(mut status) = STATUS.lock() {
+        text.clone_into(&mut status);
+    }
+    redraw();
+}
+
+fn redraw() {
+    if let Ok(status) = STATUS.lock() {
+        print!("\r{:<STATUS_WIDTH$}", *status);
+    }
+    let _ = io::stdout().flush();
+}
+
+fn event_loop(hold: bool, on_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
     if hold {
         notice("hold SPACE to talk, Q to quit");
     } else {
         notice("this terminal can't report key release: SPACE starts and stops talking, Q quits");
     }
-    show(false)?;
     let mut keyed = false;
     loop {
         let Event::Key(key) = event::read()? else {
@@ -61,7 +79,7 @@ fn event_loop(hold: bool, set_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
             && (ctrl_c || matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc))
         {
             if keyed {
-                set_ptt(false);
+                on_ptt(false);
             }
             return Ok(());
         }
@@ -76,19 +94,7 @@ fn event_loop(hold: bool, set_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
         };
         if want != keyed {
             keyed = want;
-            set_ptt(keyed);
-            show(keyed)?;
+            on_ptt(keyed);
         }
     }
-}
-
-fn show(keyed: bool) -> io::Result<()> {
-    KEYED.store(keyed, Ordering::Relaxed);
-    let status = if keyed {
-        "[TX] transmitting"
-    } else {
-        "[  ] idle        "
-    };
-    print!("\r{status}");
-    io::stdout().flush()
 }

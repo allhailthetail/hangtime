@@ -1,9 +1,9 @@
 //! Hangtime binary entry point.
 //!
-//! Phase 1 modes:
+//! Modes:
 //!
-//! - `hangtime [--port N] [--peer HOST:PORT]`: talk to one peer. Without
-//!   `--peer`, waits for a peer to connect.
+//! - `hangtime [--port N] [--peer HOST:PORT] [--name NAME]`: talk to one
+//!   peer. Without `--peer`, waits for a peer to connect.
 //! - `hangtime parrot [--port N]`: headless echo node that plays each
 //!   transmission back to its sender, for testing with one machine.
 
@@ -19,12 +19,15 @@ const IDENTITY_FILE: &str = "hangtime-identity.key";
 
 mod parrot;
 mod ptt;
+mod radio;
 mod talk;
 
 const USAGE: &str = "\
 usage:
-  hangtime [--port N] [--peer HOST:PORT]   talk to one peer (waits for one without --peer)
-  hangtime parrot [--port N]               echo each transmission back to its sender";
+  hangtime [--port N] [--peer HOST:PORT] [--name NAME]
+      talk to one peer (waits for one without --peer)
+  hangtime parrot [--port N]
+      echo each transmission back to its sender";
 
 enum Mode {
     Talk { peer: Option<SocketAddr> },
@@ -34,12 +37,14 @@ enum Mode {
 struct Args {
     mode: Mode,
     port: Option<u16>,
+    name: Option<String>,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut parrot = false;
     let mut port = None;
     let mut peer = None;
+    let mut name = None;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "parrot" => parrot = true,
@@ -56,6 +61,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                     .ok_or_else(|| format!("peer {value} did not resolve"))?;
                 peer = Some(addr);
             }
+            "--name" => name = Some(args.next().ok_or("--name needs a value")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -64,7 +70,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         (true, None) => Mode::Parrot,
         (false, peer) => Mode::Talk { peer },
     };
-    Ok(Args { mode, port })
+    Ok(Args { mode, port, name })
 }
 
 fn main() -> ExitCode {
@@ -104,16 +110,30 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         // sharing this install's radio ID.
         Mode::Parrot => Identity::generate()?,
     };
+    let name = match (&args.mode, args.name) {
+        (_, Some(name)) => name,
+        (Mode::Talk { .. }, None) => default_name(),
+        (Mode::Parrot, None) => "parrot".into(),
+    };
+    println!("name {name}");
     let bind = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(default_port)));
     let node = {
         let _guard = runtime.enter();
-        Node::bind(bind, &identity)?
+        Node::bind(bind, &identity, &name)?
     };
     println!("this node's fingerprint {}", node.fingerprint());
     match args.mode {
         Mode::Talk { peer } => talk::run(&runtime, &node, peer),
         Mode::Parrot => runtime.block_on(parrot::run(&node)),
     }
+}
+
+/// The computer's name, used when `--name` is not given.
+fn default_name() -> String {
+    ["COMPUTERNAME", "HOSTNAME"]
+        .iter()
+        .find_map(|var| std::env::var(var).ok())
+        .unwrap_or_else(|| "hangtime".into())
 }
 
 #[cfg(test)]

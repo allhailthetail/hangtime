@@ -1,20 +1,21 @@
-//! Talk mode: one peer, PTT from the terminal.
+//! Talk mode: one peer, PTT from the terminal, floor control on All Call.
 
 use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use hangtime_audio::{
     Capture, DeviceLatency, PACKETIZATION_DELAY, Playback, ReceiveStats, Receiver, Transmitter,
 };
+use hangtime_proto::{ALL_CALL, VoiceHeader};
 use hangtime_transport::{Node, Peer};
 use tokio::runtime::Runtime;
 
 use crate::ptt;
-
-/// Talkgroups arrive in phase 2; until then everything is group 0.
-const GROUP_ID: u32 = 0;
+use crate::radio::{Members, Radio};
 
 pub fn run(runtime: &Runtime, node: &Node, peer: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
     let peer = match peer {
@@ -27,39 +28,57 @@ pub fn run(runtime: &Runtime, node: &Node, peer: Option<SocketAddr>) -> Result<(
             runtime.block_on(node.accept()).ok_or("endpoint closed")??
         }
     };
-    println!("connected to {} [UNTRUSTED]", peer.remote_address());
+    println!(
+        "connected to {} at {} [UNTRUSTED]",
+        peer.display_name(),
+        peer.remote_address()
+    );
     println!("  peer fingerprint {}", peer.fingerprint());
 
+    let me = node.fingerprint().radio_id();
     let (capture, mic) = Capture::open_default()?;
     let (playback, speaker) = Playback::open_default()?;
     let report = latency_reporter(capture.latency(), playback.latency(), peer.clone());
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
-    runtime.spawn(forward_voice(peer.clone(), receiver.inbox()));
 
-    let tx_peer = peer.clone();
-    let transmitter = Transmitter::spawn(
-        mic,
-        capture.device_rate(),
-        node.fingerprint().radio_id(),
-        GROUP_ID,
-        move |datagram| {
-            // Voice is unreliable by design; a dropped send is a lost frame.
-            let _ = tx_peer.send_voice(datagram);
-        },
-    )?;
-    ptt::run(|keyed| transmitter.set_ptt(keyed))?;
+    let members = Arc::new(Members::default());
+    let tx_members = Arc::clone(&members);
+    let transmitter =
+        Transmitter::spawn(mic, capture.device_rate(), me, ALL_CALL, move |datagram| {
+            tx_members.send_voice(datagram);
+        })?;
+    let radio = Radio::new(me, transmitter, Arc::clone(&members));
+    members.add(peer.clone());
+    runtime.spawn(Arc::clone(&radio).run_timers());
+    runtime.spawn(serve_peer(Arc::clone(&radio), peer, receiver.inbox()));
+
+    ptt::set_status("[  ] idle");
+    ptt::run(|keyed| radio.ptt(keyed))?;
     Ok(())
 }
 
-/// Hands received voice datagrams to the receive thread until the peer
-/// disconnects.
-async fn forward_voice(peer: Peer, inbox: std::sync::mpsc::Sender<Vec<u8>>) {
-    while let Ok(datagram) = peer.recv_voice().await {
-        if inbox.send(datagram.to_vec()).is_err() {
-            return;
+/// Handles one peer's control messages and voice until it disconnects.
+async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Sender<Vec<u8>>) {
+    let control = async {
+        while let Ok(message) = peer.recv_control().await {
+            radio.on_control(&peer, message);
         }
+    };
+    let voice = async {
+        while let Ok(datagram) = peer.recv_voice().await {
+            let Ok((header, _)) = VoiceHeader::decode(&datagram) else {
+                continue;
+            };
+            if radio.on_voice(&header) && inbox.send(datagram.to_vec()).is_err() {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        () = control => {}
+        () = voice => {}
     }
-    ptt::notice("peer disconnected; press Q to quit");
+    radio.on_peer_lost(&peer);
 }
 
 /// Prints a latency estimate after each received transmission.
