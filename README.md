@@ -8,7 +8,9 @@ control, and call hang time. It lives in the system tray, is driven by
 global hotkeys, and works peer-to-peer on a LAN with no server at all.
 An optional server acts as a repeater for off-net comms.
 
-> **Status:** early design. Nothing is built yet. The design lives in
+> **Status:** in development (phase 2 of 5). A terminal build does PTT
+> voice between peers on a LAN with floor control, tones, and mDNS
+> discovery. The design lives in
 > [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Planned features
@@ -57,16 +59,44 @@ cargo build --release
 cargo test --workspace
 ```
 
-Platform-specific native dependencies will be listed here as they are
-added.
+Native build dependencies:
 
-## Usage (planned)
+- **Windows:** Visual Studio Build Tools with the C++ workload and
+  CMake (both included in the "Desktop development with C++" workload).
+- **Linux:** `build-essential`, `cmake`, `pkg-config`, `libasound2-dev`.
+- **macOS:** Xcode Command Line Tools and `cmake`.
+
+On Windows the release exe links the C runtime statically, so
+`target\release\hangtime.exe` is a single file that runs on any
+64-bit Windows 10 or 11 machine with nothing else installed.
+
+## Usage
 
 ```bash
-hangtime                 # start the tray client
-hangtime --server        # run as a headless repeater
-hangtime status          # show peers, talkgroups, and floor state
+hangtime                          # talk; finds peers on the LAN
+hangtime --peer 192.168.1.20:4747 # also dial a peer by address
+hangtime --name "Desk"            # name shown to others
+hangtime parrot                   # echo node for testing alone
+hangtime parrot --lan             # echo node, discoverable on the LAN
 ```
+
+Hold SPACE to talk and press Q to quit. Hangtime listens on UDP port
+4747 (or any free port if that is taken) and uses mDNS (UDP 5353) to
+find peers.
+
+### Trying it on two machines
+
+1. Copy `hangtime.exe` to both machines. Each creates its own identity
+   on first run.
+1. Run `hangtime` on both. When Windows Firewall asks, allow access on
+   the network type you are on (usually Private).
+1. Within a few seconds each shows the other as joined. If not (for
+   example, different subnets, or Wi-Fi that blocks multicast), run one
+   side with `--peer <other machine's IP>:4747`.
+
+Both machines must run the same build; older builds cannot connect.
+
+Planned later: `hangtime --server` as a repeater, and a tray app.
 
 ## Documentation
 

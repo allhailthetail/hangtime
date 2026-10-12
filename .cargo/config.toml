@@ -1,4 +1,9 @@
+# Windows: link the C runtime statically so the exe runs on machines
+# without the Visual C++ redistributable. libopus is built by CMake,
+# which picks its runtime from CMAKE_MSVC_RUNTIME_LIBRARY rather than the
+# compiler flags Rust passes, so a toolchain file sets it to match.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
 [env]
-# audiopus_sys vendors a libopus CMakeLists.txt that declares a CMake
-# minimum below 3.5, which CMake 4 refuses to configure without this.
-CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+CMAKE_TOOLCHAIN_FILE = { value = "build/msvc-static-crt.cmake", relative = true }

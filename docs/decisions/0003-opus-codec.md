@@ -30,6 +30,6 @@ in-band FEC on, DTX on.
   carries both a sequence number and a timestamp
   ([0006](0006-voice-datagram-header.md)).
 - The `opus` crate builds libopus from C, so builds need a C compiler
-  and CMake. Its bundled CMake script needs
-  `CMAKE_POLICY_VERSION_MINIMUM=3.5` under CMake 4, set in
-  `.cargo/config.toml`.
+  and CMake. On Windows, `.cargo/config.toml` and
+  `build/msvc-static-crt.cmake` link the C runtime statically so the
+  exe runs without the Visual C++ redistributable.
