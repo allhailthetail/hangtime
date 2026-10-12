@@ -11,6 +11,7 @@ publish.workspace = true
 bytes = "1"
 crossterm = "0.29"
 hangtime-audio.workspace = true
+hangtime-identity.workspace = true
 hangtime-proto.workspace = true
 hangtime-transport.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }

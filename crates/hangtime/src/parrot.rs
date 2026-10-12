@@ -128,6 +128,7 @@ async fn replay(peer: &Peer, recording: Recording, parrot_id: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hangtime_identity::Identity;
     use std::net::SocketAddr;
 
     fn datagram(header: VoiceHeader, payload: &[u8]) -> Vec<u8> {
@@ -139,8 +140,8 @@ mod tests {
     #[tokio::test]
     async fn echoes_transmission_as_its_own() {
         let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let parrot = Node::bind(localhost).unwrap();
-        let client = Node::bind(localhost).unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
         let parrot_id = parrot.fingerprint().radio_id();
         tokio::spawn(async move { run(&parrot).await.unwrap() });
@@ -188,8 +189,8 @@ mod tests {
     #[tokio::test]
     async fn queues_replays_without_overlap() {
         let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let parrot = Node::bind(localhost).unwrap();
-        let client = Node::bind(localhost).unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
         tokio::spawn(async move { run(&parrot).await.unwrap() });
         let peer = client.connect(parrot_addr).await.unwrap();

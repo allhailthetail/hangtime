@@ -126,15 +126,19 @@ The wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 
 ## Identity and security
 
-- Each install generates an **Ed25519 keypair** on first run. A short
-  numeric **radio ID** is derived from the public key for display and
-  addressing.
+- Each install generates an **Ed25519 keypair** on first run and keeps
+  it in `hangtime-identity.key` in the user's config folder. The
+  fingerprint is the SHA-256 of the public key; the **radio ID** is its
+  first four bytes ([ADR-0008](decisions/0008-persistent-ed25519-identity.md)).
 - Peers authenticate by pinning public keys. The first contact with an
   unknown key follows a trust-on-first-use policy (details are an open
   question).
-- **Group keys** protect scoped talkgroups in peer-to-peer mode.
-  Possession of the key is membership. Peers without it cannot decrypt
-  the group's voice and ignore it.
+- **Group keys** protect scoped talkgroups. Possession of the key is
+  membership: `JOIN` carries an HMAC proof, and talkers only send a
+  group's voice to peers whose proof verifies. Voice is already
+  encrypted end to end by QUIC in peer-to-peer mode; encrypting payloads
+  with the group key arrives with relays in server mode
+  ([ADR-0009](decisions/0009-group-keys-prove-membership.md)).
 - In server mode, the server holds authoritative ACLs and can
   distribute group keys.
 

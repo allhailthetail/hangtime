@@ -32,10 +32,10 @@ Cargo workspace (edition 2024); every crate lives in `crates/`.
 - `hangtime-transport`: QUIC connections, voice datagrams, control
   streams.
 - `hangtime-audio`: device I/O, ring buffer handoff, Opus.
+- `hangtime-identity`: persistent Ed25519 key, fingerprint, radio ID.
 
-Later phases add crates for session/floor control, discovery, identity,
-UI, and server-only logic (`hangtime-server`) as they are needed, not
-before.
+Later phases add crates for session/floor control, discovery, UI, and
+server-only logic (`hangtime-server`) as they are needed, not before.
 
 <!-- Fill in once the workspace exists. Planned crates:
 crates/core (session, floor control, groups), crates/audio,

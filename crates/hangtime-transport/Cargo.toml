@@ -9,10 +9,10 @@ publish.workspace = true
 
 [dependencies]
 bytes = "1"
+hangtime-identity.workspace = true
 hangtime-proto.workspace = true
 quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls", "ring"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "ring"] }
-ring = "0.17"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["rt"] }
 

@@ -4,8 +4,9 @@
 //! streams. Voice is never sent on a reliable stream.
 //!
 //! Connection setup follows `docs/PROTOCOL.md`: ALPN `hangtime/1`, mutual
-//! TLS with self-signed certificates. Phase 1 accepts any certificate;
-//! callers must show the peer as untrusted until the user confirms its
+//! TLS with self-signed certificates built from each node's Ed25519
+//! identity key (ADR-0008). Any Ed25519 certificate is accepted; callers
+//! must show the peer as untrusted until the user confirms its
 //! [`Fingerprint`] (ADR-0007).
 
 use std::fmt;
@@ -13,12 +14,14 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use bytes::Bytes;
+pub use hangtime_identity::Fingerprint;
+use hangtime_identity::Identity;
 use quinn::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{CryptoProvider, verify_tls12_signature, verify_tls13_signature};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use rustls::server::danger::{ClientCertVerified, ClientCertVerifier};
-use rustls::{DigitallySignedStruct, DistinguishedName, SignatureScheme};
+use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, SignatureScheme};
 
 /// QUIC application protocol identifier. The suffix is the protocol
 /// major version.
@@ -31,41 +34,6 @@ pub const DEFAULT_PORT: u16 = 4747;
 /// against it.
 const SERVER_NAME: &str = "hangtime";
 
-/// SHA-256 of a peer's certificate. Shown to the user to decide trust.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Fingerprint([u8; 32]);
-
-impl Fingerprint {
-    fn of(cert: &CertificateDer<'_>) -> Self {
-        let digest = ring::digest::digest(&ring::digest::SHA256, cert);
-        Self(digest.as_ref().try_into().expect("SHA-256 is 32 bytes"))
-    }
-
-    /// Placeholder radio ID until Ed25519 identities exist: the first four
-    /// bytes of the fingerprint.
-    pub fn radio_id(&self) -> u32 {
-        u32::from_be_bytes([self.0[0], self.0[1], self.0[2], self.0[3]])
-    }
-}
-
-impl fmt::Display for Fingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, byte) in self.0.iter().enumerate() {
-            if i > 0 && i % 2 == 0 {
-                f.write_str(":")?;
-            }
-            write!(f, "{byte:02x}")?;
-        }
-        Ok(())
-    }
-}
-
-impl fmt::Debug for Fingerprint {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Fingerprint({self})")
-    }
-}
-
 /// A local QUIC endpoint that both accepts and makes connections.
 pub struct Node {
     endpoint: quinn::Endpoint,
@@ -73,13 +41,16 @@ pub struct Node {
 }
 
 impl Node {
-    /// Binds a UDP socket with a freshly generated self-signed
-    /// certificate. Must be called inside a Tokio runtime.
-    pub fn bind(addr: SocketAddr) -> Result<Self, TransportError> {
-        let generated = rcgen::generate_simple_self_signed(vec![SERVER_NAME.to_string()])?;
-        let cert = generated.cert.der().clone();
-        let key = PrivatePkcs8KeyDer::from(generated.signing_key.serialize_der());
-        let fingerprint = Fingerprint::of(&cert);
+    /// Binds a UDP socket, presenting a self-signed certificate for
+    /// `identity`. Must be called inside a Tokio runtime.
+    pub fn bind(addr: SocketAddr, identity: &Identity) -> Result<Self, TransportError> {
+        let key = PrivatePkcs8KeyDer::from(identity.pkcs8_der().to_vec());
+        let signing_key = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(&key, &rcgen::PKCS_ED25519)?;
+        let cert = rcgen::CertificateParams::new(vec![SERVER_NAME.to_string()])?
+            .self_signed(&signing_key)?
+            .der()
+            .clone();
+        let fingerprint = identity.fingerprint();
 
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier = Arc::new(AcceptAnyCert(Arc::clone(&provider)));
@@ -113,7 +84,7 @@ impl Node {
         })
     }
 
-    /// This node's certificate fingerprint.
+    /// This node's identity fingerprint.
     pub fn fingerprint(&self) -> Fingerprint {
         self.fingerprint
     }
@@ -151,15 +122,19 @@ impl Peer {
         let fingerprint = connection
             .peer_identity()
             .and_then(|identity| identity.downcast::<Vec<CertificateDer<'static>>>().ok())
-            .and_then(|certs| certs.first().map(Fingerprint::of))
-            .ok_or(TransportError::NoPeerCertificate)?;
+            .and_then(|certs| {
+                certs
+                    .first()
+                    .and_then(|cert| Fingerprint::of_certificate(cert))
+            })
+            .ok_or(TransportError::NoPeerIdentity)?;
         Ok(Self {
             connection,
             fingerprint,
         })
     }
 
-    /// The peer's certificate fingerprint. Untrusted until the user
+    /// The peer's identity fingerprint. Untrusted until the user
     /// confirms it.
     pub fn fingerprint(&self) -> Fingerprint {
         self.fingerprint
@@ -185,8 +160,8 @@ impl Peer {
     }
 }
 
-/// Accepts any certificate but still checks handshake signatures, so the
-/// peer must hold the private key for the certificate it presents.
+/// Accepts any Ed25519 certificate and still checks handshake signatures,
+/// so the peer must hold the private key for the certificate it presents.
 #[derive(Debug)]
 struct AcceptAnyCert(Arc<CryptoProvider>);
 
@@ -224,15 +199,25 @@ impl AcceptAnyCert {
     }
 }
 
+fn require_ed25519(cert: &CertificateDer<'_>) -> Result<(), rustls::Error> {
+    match Fingerprint::of_certificate(cert) {
+        Some(_) => Ok(()),
+        None => Err(rustls::Error::InvalidCertificate(
+            CertificateError::BadEncoding,
+        )),
+    }
+}
+
 impl ServerCertVerifier for AcceptAnyCert {
     fn verify_server_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
         _now: UnixTime,
     ) -> Result<ServerCertVerified, rustls::Error> {
+        require_ed25519(end_entity)?;
         Ok(ServerCertVerified::assertion())
     }
 
@@ -266,10 +251,11 @@ impl ClientCertVerifier for AcceptAnyCert {
 
     fn verify_client_cert(
         &self,
-        _end_entity: &CertificateDer<'_>,
+        end_entity: &CertificateDer<'_>,
         _intermediates: &[CertificateDer<'_>],
         _now: UnixTime,
     ) -> Result<ClientCertVerified, rustls::Error> {
+        require_ed25519(end_entity)?;
         Ok(ClientCertVerified::assertion())
     }
 
@@ -305,8 +291,8 @@ pub enum TransportError {
     Connect(quinn::ConnectError),
     Connection(quinn::ConnectionError),
     SendVoice(quinn::SendDatagramError),
-    /// The peer completed the handshake without a certificate.
-    NoPeerCertificate,
+    /// The peer completed the handshake without an Ed25519 certificate.
+    NoPeerIdentity,
 }
 
 impl fmt::Display for TransportError {
@@ -319,7 +305,7 @@ impl fmt::Display for TransportError {
             Self::Connect(e) => write!(f, "connect: {e}"),
             Self::Connection(e) => write!(f, "connection: {e}"),
             Self::SendVoice(e) => write!(f, "send voice: {e}"),
-            Self::NoPeerCertificate => write!(f, "peer presented no certificate"),
+            Self::NoPeerIdentity => write!(f, "peer presented no Ed25519 identity"),
         }
     }
 }
@@ -352,8 +338,8 @@ mod tests {
     #[tokio::test]
     async fn exchanges_voice_datagrams_with_mutual_fingerprints() {
         let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let listener = Node::bind(localhost).unwrap();
-        let dialer = Node::bind(localhost).unwrap();
+        let listener = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
+        let dialer = Node::bind(localhost, &Identity::generate().unwrap()).unwrap();
         let listen_addr = listener.local_addr().unwrap();
 
         let (accepted, connected) = tokio::join!(listener.accept(), dialer.connect(listen_addr));
@@ -365,12 +351,5 @@ mod tests {
 
         connected.send_voice(b"voice".to_vec()).unwrap();
         assert_eq!(&accepted.recv_voice().await.unwrap()[..], b"voice");
-    }
-
-    #[test]
-    fn formats_fingerprint_in_pairs() {
-        let fingerprint = Fingerprint([0xab; 32]);
-        assert!(fingerprint.to_string().starts_with("abab:abab:"));
-        assert_eq!(fingerprint.radio_id(), 0xabab_abab);
     }
 }

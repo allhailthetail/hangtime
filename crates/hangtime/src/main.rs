@@ -11,7 +11,11 @@ use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::ExitCode;
 
+use hangtime_identity::Identity;
 use hangtime_transport::{DEFAULT_PORT, Node};
+
+/// One identity per install, in the user's config folder.
+const IDENTITY_FILE: &str = "hangtime-identity.key";
 
 mod parrot;
 mod ptt;
@@ -87,12 +91,24 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         Mode::Talk { peer: Some(_) } => 0,
         _ => DEFAULT_PORT,
     };
+    println!("hangtime {}", env!("CARGO_PKG_VERSION"));
+    let identity = match args.mode {
+        Mode::Talk { .. } => {
+            let path =
+                Identity::default_path(IDENTITY_FILE).ok_or("no user config folder found")?;
+            let identity = Identity::load_or_create(&path)?;
+            println!("identity {}", path.display());
+            identity
+        }
+        // The parrot is a test tool: a temporary identity keeps it from
+        // sharing this install's radio ID.
+        Mode::Parrot => Identity::generate()?,
+    };
     let bind = SocketAddr::from(([0, 0, 0, 0], args.port.unwrap_or(default_port)));
     let node = {
         let _guard = runtime.enter();
-        Node::bind(bind)?
+        Node::bind(bind, &identity)?
     };
-    println!("hangtime {}", env!("CARGO_PKG_VERSION"));
     println!("this node's fingerprint {}", node.fingerprint());
     match args.mode {
         Mode::Talk { peer } => talk::run(&runtime, &node, peer),

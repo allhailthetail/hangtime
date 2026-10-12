@@ -26,12 +26,14 @@ Rationale is in
   major versions offers each, and peers with no version in common fail
   the handshake.
 - **TLS:** TLS 1.3 (required by QUIC). Both sides present a self-signed
-  certificate (mutual TLS). Handshake signatures are verified, so a peer
-  must hold the private key for its certificate.
-- **Trust (phase 1):** any certificate is accepted. Nodes identify a
-  peer by the SHA-256 fingerprint of its certificate and show it as
-  untrusted until the user confirms it. Pinning to the Ed25519 identity
-  key replaces this when identities land.
+  certificate for their Ed25519 identity key (mutual TLS). Handshake
+  signatures are verified, so a peer must hold that key. Certificates
+  with any other key type fail the handshake.
+- **Identity:** a node's fingerprint is the SHA-256 of its raw 32-byte
+  Ed25519 public key, and its radio ID is the fingerprint's first four
+  bytes, big-endian ([ADR-0008](decisions/0008-persistent-ed25519-identity.md)).
+- **Trust:** any identity is accepted. Nodes show a peer as untrusted
+  until the user confirms its fingerprint.
 - **Datagrams:** both sides enable QUIC datagrams (RFC 9221).
 
 TODO: the `HELLO` exchange (radio ID, capabilities, display name) and
