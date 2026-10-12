@@ -202,13 +202,15 @@ mod tests {
 }
 
 /// Uses real multicast on this machine, so it needs a network interface
-/// and mDNS allowed through the firewall.
+/// and mDNS allowed through the firewall, and other nodes on the LAN can
+/// interfere. Run by hand: `cargo test -p hangtime-discovery -- --ignored`.
 #[cfg(test)]
 mod lan_tests {
     use super::*;
     use std::time::Duration;
 
     #[tokio::test]
+    #[ignore = "uses real LAN multicast"]
     async fn two_nodes_find_each_other() {
         let a = Discovery::start(&Advert {
             radio_id: 0xaaaa_aaaa,
@@ -225,10 +227,19 @@ mod lan_tests {
         })
         .unwrap();
         let wait = Duration::from_secs(10);
-        let seen_by_a = tokio::time::timeout(wait, a.next()).await.unwrap().unwrap();
-        let seen_by_b = tokio::time::timeout(wait, b.next()).await.unwrap().unwrap();
-        assert_eq!(seen_by_a.fingerprint, "bb");
+        let seen_by_a = tokio::time::timeout(wait, find(&a, "bb")).await.unwrap();
+        tokio::time::timeout(wait, find(&b, "aa")).await.unwrap();
         assert!(seen_by_a.addrs.iter().all(|addr| addr.port() == 40002));
-        assert_eq!(seen_by_b.fingerprint, "aa");
+    }
+
+    /// Waits for a node with `fingerprint`, skipping real Hangtime nodes
+    /// that may be running on the LAN.
+    async fn find(discovery: &Discovery, fingerprint: &str) -> Found {
+        loop {
+            let found = discovery.next().await.unwrap();
+            if found.fingerprint == fingerprint {
+                return found;
+            }
+        }
     }
 }
