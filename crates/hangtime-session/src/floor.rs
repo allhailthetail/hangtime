@@ -90,6 +90,10 @@ pub struct Floor {
     state: FloorState,
     /// Radio IDs that transmitted in the current exchange.
     participants: Vec<u32>,
+    /// The last remote transmission that ended. Its stragglers (voice can
+    /// arrive after `KEYDOWN`, which travels separately) must not take the
+    /// floor again.
+    ended: Option<(u32, u16)>,
 }
 
 impl Floor {
@@ -99,6 +103,7 @@ impl Floor {
             config,
             state: FloorState::Idle,
             participants: Vec::new(),
+            ended: None,
         }
     }
 
@@ -188,6 +193,9 @@ impl Floor {
                 ..
             } => (current, current_id) == (talker, transmission_id),
             FloorState::Idle | FloorState::Hang { .. } => {
+                if self.ended == Some((talker, transmission_id)) {
+                    return false;
+                }
                 self.receive(talker, transmission_id, now);
                 true
             }
@@ -259,6 +267,14 @@ impl Floor {
     }
 
     fn start_hang(&mut self, now: Instant) {
+        if let FloorState::Receiving {
+            talker,
+            transmission_id,
+            ..
+        } = self.state
+        {
+            self.ended = Some((talker, transmission_id));
+        }
         self.state = FloorState::Hang {
             until: now + self.config.hang_time,
         };
@@ -363,6 +379,18 @@ mod tests {
         assert!(floor.on_voice(HIGH, 3, t));
         assert!(!floor.on_voice(LOW, 1, t + ms(10)));
         assert!(floor.on_voice(HIGH, 3, t + ms(20)));
+    }
+
+    #[test]
+    fn voice_after_key_down_does_not_retake_floor() {
+        let (mut floor, t) = floor();
+        floor.on_key_up(HIGH, 4, t);
+        floor.on_key_down(HIGH, 4, t + ms(500));
+        // The end-of-transmission datagram lands after KEYDOWN.
+        assert!(!floor.on_voice(HIGH, 4, t + ms(505)));
+        assert!(matches!(floor.state(), FloorState::Hang { .. }));
+        // The same talker's next transmission is fine.
+        assert!(floor.on_voice(HIGH, 5, t + ms(900)));
     }
 
     #[test]

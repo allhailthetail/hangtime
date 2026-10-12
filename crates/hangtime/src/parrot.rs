@@ -245,3 +245,49 @@ mod tests {
         assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
     }
 }
+
+#[cfg(test)]
+mod control_tests {
+    use super::*;
+    use hangtime_identity::Identity;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn brackets_replay_with_key_up_and_key_down() {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "parrot").unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap(), "client").unwrap();
+        let parrot_addr = parrot.local_addr().unwrap();
+        tokio::spawn(async move { run(&parrot).await.unwrap() });
+        let peer = client.connect(parrot_addr).await.unwrap();
+
+        for (sequence, end) in [(0u16, false), (1, true)] {
+            let header = VoiceHeader {
+                group_id: ALL_CALL,
+                sender: 1,
+                transmission_id: 9,
+                sequence,
+                timestamp: sequence,
+                end_of_transmission: end,
+            };
+            let mut datagram = header.encode().to_vec();
+            if !end {
+                datagram.extend_from_slice(b"x");
+            }
+            peer.send_voice(datagram).unwrap();
+        }
+
+        let mut seen = Vec::new();
+        while seen.len() < 3 {
+            let message = tokio::time::timeout(Duration::from_secs(3), peer.recv_control())
+                .await
+                .expect("timed out waiting for control message")
+                .unwrap();
+            seen.push(message);
+        }
+        println!("{seen:?}");
+        assert!(matches!(seen[0], ControlMessage::Join { .. }));
+        assert!(matches!(seen[1], ControlMessage::KeyUp { .. }));
+        assert!(matches!(seen[2], ControlMessage::KeyDown { .. }));
+    }
+}

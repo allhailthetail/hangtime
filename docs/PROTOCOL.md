@@ -128,7 +128,9 @@ States: **idle**, **transmitting** (this node), **receiving** (a peer),
   the bonk tone. Later key-ups are ignored.
 - **Voice without `KEYUP`:** voice on a free channel takes the floor,
   so a node that joins mid-transmission still hears it. Voice from
-  anyone but the floor holder is dropped.
+  anyone but the floor holder is dropped, as is voice from a
+  transmission that already ended (its last datagrams can arrive after
+  `KEYDOWN`, which travels on the stream).
 - **`KEYDOWN`:** starts **hang time (3 s)**. During hang time only
   nodes that transmitted in the current exchange may key. An exchange
   is a run of transmissions less than the hang time apart.
