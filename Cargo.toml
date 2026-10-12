@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 hangtime-audio = { path = "crates/hangtime-audio" }
+hangtime-discovery = { path = "crates/hangtime-discovery" }
 hangtime-identity = { path = "crates/hangtime-identity" }
 hangtime-proto = { path = "crates/hangtime-proto" }
 hangtime-session = { path = "crates/hangtime-session" }

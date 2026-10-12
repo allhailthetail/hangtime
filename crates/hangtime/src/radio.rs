@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hangtime_audio::{Inbox, Tone, Transmitter};
 use hangtime_proto::{ALL_CALL, ControlMessage, VoiceHeader};
@@ -25,16 +25,44 @@ struct Member {
 pub struct Members(Mutex<Vec<Member>>);
 
 impl Members {
-    /// Adds a connected peer and joins All Call with it.
-    pub fn add(&self, peer: Peer) {
+    /// Adds a connected peer and joins All Call with it. Returns false if
+    /// a connection to the same identity already exists.
+    pub fn add(&self, peer: Peer) -> bool {
+        let mut members = self.0.lock().unwrap();
+        if members
+            .iter()
+            .any(|member| member.peer.radio_id() == peer.radio_id())
+        {
+            return false;
+        }
         let _ = peer.send_control(&ControlMessage::Join {
             group_id: ALL_CALL,
             proof: None,
         });
-        self.0.lock().unwrap().push(Member {
+        members.push(Member {
             peer,
             groups: HashSet::new(),
         });
+        true
+    }
+
+    /// True if a peer with this fingerprint (lowercase hex) is connected.
+    pub fn has(&self, fingerprint: &str) -> bool {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|member| member.peer.fingerprint().hex() == fingerprint)
+    }
+
+    /// Round-trip time to a connected peer.
+    pub fn rtt_of(&self, radio_id: u32) -> Option<Duration> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|member| member.peer.radio_id() == radio_id)
+            .map(|member| member.peer.rtt())
     }
 
     /// Sends a voice datagram to every peer in its group.

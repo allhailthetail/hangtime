@@ -26,16 +26,18 @@ later phase's features while working on an earlier one.
 Cargo workspace (edition 2024); every crate lives in `crates/`.
 
 - `hangtime`: the binary. Wires the library crates together; talk
-  mode, `parrot` echo node, terminal PTT.
+  mode (mesh), `parrot` echo node, terminal PTT, tones.
 - `hangtime-proto`: wire format shared by client and server
   (mirrors `docs/PROTOCOL.md`).
 - `hangtime-transport`: QUIC connections, voice datagrams, control
   streams.
 - `hangtime-audio`: device I/O, ring buffer handoff, Opus.
 - `hangtime-identity`: persistent Ed25519 key, fingerprint, radio ID.
+- `hangtime-session`: floor control state machine (no I/O).
+- `hangtime-discovery`: mDNS advertise and browse.
 
-Later phases add crates for session/floor control, discovery, UI, and
-server-only logic (`hangtime-server`) as they are needed, not before.
+Later phases add crates for UI and server-only logic (`hangtime-server`)
+as they are needed, not before.
 
 <!-- Fill in once the workspace exists. Planned crates:
 crates/core (session, floor control, groups), crates/audio,

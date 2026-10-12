@@ -1,15 +1,18 @@
-//! Talk mode: one peer, PTT from the terminal, floor control on All Call.
+//! Talk mode: a mesh node. Accepts any number of peers, dials static
+//! peers and peers found by mDNS, and runs floor control on All Call.
 
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use hangtime_audio::{
     Capture, DeviceLatency, Inbox, PACKETIZATION_DELAY, Playback, ReceiveStats, Receiver,
     Transmitter,
 };
+use hangtime_discovery::{Advert, Discovery};
 use hangtime_proto::{ALL_CALL, VoiceHeader};
 use hangtime_transport::{Node, Peer};
 use tokio::runtime::Runtime;
@@ -17,48 +20,142 @@ use tokio::runtime::Runtime;
 use crate::ptt;
 use crate::radio::{Members, Radio};
 
-pub fn run(runtime: &Runtime, node: &Node, peer: Option<SocketAddr>) -> Result<(), Box<dyn Error>> {
-    let peer = match peer {
-        Some(addr) => {
-            println!("connecting to {addr}...");
-            runtime.block_on(node.connect(addr))?
-        }
-        None => {
-            println!("listening on {}; waiting for a peer...", node.local_addr()?);
-            runtime.block_on(node.accept()).ok_or("endpoint closed")??
-        }
-    };
-    println!(
-        "connected to {} at {} [UNTRUSTED]",
-        peer.display_name(),
-        peer.remote_address()
-    );
-    println!("  peer fingerprint {}", peer.fingerprint());
+/// Everything a connection task needs.
+struct Shared {
+    node: Node,
+    radio: Arc<Radio>,
+    members: Arc<Members>,
+    inbox: Inbox,
+    /// Fingerprints (hex) being dialed, so mDNS re-announcements don't
+    /// start a second attempt.
+    dialing: Mutex<HashSet<String>>,
+}
 
+pub fn run(
+    runtime: &Runtime,
+    node: Node,
+    static_peers: Vec<SocketAddr>,
+    name: &str,
+) -> Result<(), Box<dyn Error>> {
     let me = node.fingerprint().radio_id();
+    let port = node.local_addr()?.port();
+    println!("listening on port {port}");
+
     let (capture, mic) = Capture::open_default()?;
     let (playback, speaker) = Playback::open_default()?;
-    let report = latency_reporter(capture.latency(), playback.latency(), peer.clone());
-    let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
-
     let members = Arc::new(Members::default());
+    let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
+    let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
     let tx_members = Arc::clone(&members);
     let transmitter =
         Transmitter::spawn(mic, capture.device_rate(), me, ALL_CALL, move |datagram| {
             tx_members.send_voice(datagram);
         })?;
     let radio = Radio::new(me, transmitter, Arc::clone(&members), receiver.inbox());
-    members.add(peer.clone());
     runtime.spawn(Arc::clone(&radio).run_timers());
-    runtime.spawn(serve_peer(Arc::clone(&radio), peer, receiver.inbox()));
+
+    let fingerprint = node.fingerprint().hex();
+    let shared = Arc::new(Shared {
+        node,
+        radio: Arc::clone(&radio),
+        members,
+        inbox: receiver.inbox(),
+        dialing: Mutex::new(HashSet::new()),
+    });
+    runtime.spawn(accept_loop(Arc::clone(&shared)));
+    for addr in static_peers {
+        runtime.spawn(dial(Arc::clone(&shared), vec![addr], None));
+    }
+    let discovery = Discovery::start(&Advert {
+        radio_id: me,
+        fingerprint: &fingerprint,
+        name,
+        port,
+    });
+    match discovery {
+        Ok(discovery) => {
+            runtime.spawn(discover_loop(Arc::clone(&shared), discovery, fingerprint));
+        }
+        Err(e) => println!("LAN discovery unavailable ({e}); use --peer"),
+    }
 
     ptt::set_status("[  ] idle");
     ptt::run(|keyed| radio.ptt(keyed))?;
     Ok(())
 }
 
-/// Handles one peer's control messages and voice until it disconnects.
-async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Inbox) {
+async fn accept_loop(shared: Arc<Shared>) {
+    while let Some(accepted) = shared.node.accept().await {
+        match accepted {
+            Ok(peer) => {
+                tokio::spawn(serve(Arc::clone(&shared), peer));
+            }
+            Err(e) => ptt::notice(&format!("incoming connection failed: {e}")),
+        }
+    }
+}
+
+/// Dials nodes found on the LAN. Only the side with the lower fingerprint
+/// dials, so two nodes that find each other open one connection.
+async fn discover_loop(shared: Arc<Shared>, discovery: Discovery, own_fingerprint: String) {
+    while let Some(found) = discovery.next().await {
+        if own_fingerprint >= found.fingerprint || shared.members.has(&found.fingerprint) {
+            continue;
+        }
+        if !shared
+            .dialing
+            .lock()
+            .unwrap()
+            .insert(found.fingerprint.clone())
+        {
+            continue;
+        }
+        tokio::spawn(dial(
+            Arc::clone(&shared),
+            found.addrs,
+            Some(found.fingerprint),
+        ));
+    }
+}
+
+/// Connects to whichever address answers first. With `expected`, only
+/// keeps a connection to the identity that was advertised.
+async fn dial(shared: Arc<Shared>, addrs: Vec<SocketAddr>, expected: Option<String>) {
+    let result = shared.node.connect_any(&addrs).await;
+    if let Some(fp) = &expected {
+        shared.dialing.lock().unwrap().remove(fp);
+    }
+    match result {
+        Ok(peer)
+            if expected
+                .as_ref()
+                .is_none_or(|fp| *fp == peer.fingerprint().hex()) =>
+        {
+            serve(shared, peer).await;
+        }
+        Ok(peer) => peer.close("unexpected identity"),
+        // LAN nodes come and go; only report peers the user named.
+        Err(e) if expected.is_none() => {
+            ptt::notice(&format!("could not reach {}: {e}", addrs[0]));
+        }
+        Err(_) => {}
+    }
+}
+
+/// Registers a connected peer and handles its control messages and voice
+/// until it disconnects. Duplicate connections are closed.
+async fn serve(shared: Arc<Shared>, peer: Peer) {
+    if !shared.members.add(peer.clone()) {
+        peer.close("duplicate connection");
+        return;
+    }
+    ptt::notice(&format!(
+        "{} joined from {} [UNTRUSTED] {}",
+        peer.display_name(),
+        peer.remote_address(),
+        peer.fingerprint()
+    ));
+    let radio = &shared.radio;
     let control = async {
         while let Ok(message) = peer.recv_control().await {
             radio.on_control(&peer, message);
@@ -69,7 +166,7 @@ async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Inbox) {
             let Ok((header, _)) = VoiceHeader::decode(&datagram) else {
                 continue;
             };
-            if radio.on_voice(&header) && !inbox.datagram(datagram.to_vec()) {
+            if radio.on_voice(&header) && !shared.inbox.datagram(datagram.to_vec()) {
                 return;
             }
         }
@@ -88,13 +185,13 @@ async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Inbox) {
 fn latency_reporter(
     input: DeviceLatency,
     output: DeviceLatency,
-    peer: Peer,
+    members: Arc<Members>,
 ) -> impl FnMut(ReceiveStats) + Send + 'static {
     move |stats| {
         let estimate = LatencyEstimate {
             input: input.get(),
             packetize: PACKETIZATION_DELAY,
-            network: peer.rtt() / 2,
+            network: members.rtt_of(stats.sender).unwrap_or_default() / 2,
             jitter: stats.jitter,
             output: output.get() + stats.playout_queue,
         };

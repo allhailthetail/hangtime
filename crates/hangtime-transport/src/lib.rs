@@ -79,16 +79,27 @@ impl Node {
     /// Connects to a peer. The dialer opens the control stream and says
     /// `HELLO` first.
     pub async fn connect(&self, addr: SocketAddr) -> Result<Peer, TransportError> {
-        let handshake = async {
-            let connection = self.endpoint.connect(addr, SERVER_NAME)?.await?;
-            let (mut send, mut recv) = connection.open_bi().await?;
-            send.write_all(&self.hello.encode()).await?;
-            let hello = read_message(&mut recv).await?;
-            Peer::new(connection, send, recv, hello)
-        };
-        tokio::time::timeout(HELLO_TIMEOUT, handshake)
-            .await
-            .map_err(|_| TransportError::HelloTimeout)?
+        dial(self.endpoint.clone(), self.hello.clone(), addr).await
+    }
+
+    /// Connects to whichever of `addrs` answers first. A node advertises
+    /// every interface address, and some (VPNs, virtual adapters) are
+    /// unreachable, so trying them one by one could stall on timeouts.
+    pub async fn connect_any(&self, addrs: &[SocketAddr]) -> Result<Peer, TransportError> {
+        let mut attempts = tokio::task::JoinSet::new();
+        for &addr in addrs {
+            attempts.spawn(dial(self.endpoint.clone(), self.hello.clone(), addr));
+        }
+        let mut last_error = TransportError::Closed;
+        while let Some(attempt) = attempts.join_next().await {
+            match attempt {
+                // Dropping the set aborts the slower attempts.
+                Ok(Ok(peer)) => return Ok(peer),
+                Ok(Err(e)) => last_error = e,
+                Err(_) => {}
+            }
+        }
+        Err(last_error)
     }
 
     /// Waits for the next incoming connection. `None` once the endpoint
@@ -108,6 +119,23 @@ impl Node {
                 .unwrap_or(Err(TransportError::HelloTimeout)),
         )
     }
+}
+
+async fn dial(
+    endpoint: quinn::Endpoint,
+    hello: ControlMessage,
+    addr: SocketAddr,
+) -> Result<Peer, TransportError> {
+    let handshake = async {
+        let connection = endpoint.connect(addr, SERVER_NAME)?.await?;
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(&hello.encode()).await?;
+        let hello = read_message(&mut recv).await?;
+        Peer::new(connection, send, recv, hello)
+    };
+    tokio::time::timeout(HELLO_TIMEOUT, handshake)
+        .await
+        .map_err(|_| TransportError::HelloTimeout)?
 }
 
 /// Reads the next control message this build knows, skipping unknown
@@ -192,6 +220,11 @@ impl Peer {
 
     pub fn remote_address(&self) -> SocketAddr {
         self.connection.remote_address()
+    }
+
+    /// Closes the connection, for example a duplicate of one already open.
+    pub fn close(&self, reason: &str) {
+        self.connection.close(0u32.into(), reason.as_bytes());
     }
 
     /// Current round-trip time estimate from QUIC.
@@ -312,6 +345,21 @@ mod tests {
 
         connected.send_voice(b"voice".to_vec()).unwrap();
         assert_eq!(&accepted.recv_voice().await.unwrap()[..], b"voice");
+    }
+
+    #[tokio::test]
+    async fn connect_any_skips_unreachable_addresses() {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener = Node::bind(localhost, &Identity::generate().unwrap(), "listener").unwrap();
+        let dialer = Node::bind(localhost, &Identity::generate().unwrap(), "dialer").unwrap();
+        // TEST-NET-1 (RFC 5737) never answers.
+        let dead: SocketAddr = "192.0.2.1:4747".parse().unwrap();
+        let addrs = [dead, listener.local_addr().unwrap()];
+        let started = std::time::Instant::now();
+        let (accepted, connected) = tokio::join!(listener.accept(), dialer.connect_any(&addrs));
+        accepted.unwrap().unwrap();
+        assert_eq!(connected.unwrap().display_name(), "listener");
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[tokio::test]

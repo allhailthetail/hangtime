@@ -134,6 +134,11 @@ impl Fingerprint {
     pub fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
+
+    /// Lowercase hex without separators, for TXT records and comparison.
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
 }
 
 impl fmt::Display for Fingerprint {
@@ -218,6 +223,7 @@ mod tests {
         let fingerprint = Fingerprint([0xab; 32]);
         assert_eq!(fingerprint.radio_id(), 0xabab_abab);
         assert!(fingerprint.to_string().starts_with("abab:abab:"));
+        assert_eq!(fingerprint.hex(), "ab".repeat(32));
     }
 
     #[test]

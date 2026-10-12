@@ -142,5 +142,31 @@ States: **idle**, **transmitting** (this node), **receiving** (a peer),
 
 ## Discovery
 
-TODO: mDNS service type (`_hangtime._udp`), TXT record fields, and the
-rendezvous registration messages for server mode.
+### mDNS (LAN)
+
+Nodes advertise the DNS-SD service `_hangtime._udp.local.` on the port
+they listen on. The instance name is the display name followed by the
+radio ID in hex. TXT records:
+
+| Key | Value |
+| --- | --- |
+| `v` | Protocol major version (`2`) |
+| `id` | Radio ID, 8 lowercase hex digits |
+| `fp` | Identity fingerprint, 64 lowercase hex digits |
+
+- Nodes ignore adverts with another major version and their own
+  fingerprint.
+- When two nodes find each other, only the one with the lower `fp`
+  (compared as strings) dials, so they open one connection.
+- A node advertises every interface address. Dialers try all IPv4
+  addresses at once and keep the first that completes `HELLO`.
+- The dialer closes the connection if the peer's identity does not
+  match the advertised `fp`.
+- A node keeps one connection per identity and closes duplicates.
+- Group membership is not advertised.
+
+mDNS is link-local. Static peers (`--peer`) cover other networks.
+
+### Server rendezvous
+
+TODO: registration messages for server mode (phase 5).

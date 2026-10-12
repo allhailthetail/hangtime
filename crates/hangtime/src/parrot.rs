@@ -2,11 +2,17 @@
 //! sender, like a DMR parrot talkgroup. It forwards Opus frames without
 //! decoding, so it needs no audio devices. Each replay is a normal
 //! transmission: `KEYUP`, voice, `KEYDOWN`.
+//!
+//! With `--lan` it also advertises itself over mDNS and dials nodes it
+//! finds, so LAN discovery can be tested on one machine.
 
+use std::collections::HashSet;
 use std::error::Error;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
+use hangtime_discovery::{Advert, Discovery};
 use hangtime_proto::{ALL_CALL, ControlMessage, FRAME_DURATION, VoiceHeader};
 use hangtime_transport::{Node, Peer};
 use tokio::sync::mpsc;
@@ -18,24 +24,67 @@ const REPLAY_DELAY: Duration = Duration::from_millis(500);
 /// Longest transmission recorded: 3 minutes of 20 ms frames.
 const MAX_FRAMES: usize = 9_000;
 
-pub async fn run(node: &Node) -> Result<(), Box<dyn Error>> {
-    println!("parrot listening on {}", node.local_addr()?);
+pub async fn run(node: Node, lan: bool) -> Result<(), Box<dyn Error>> {
+    let addr = node.local_addr()?;
+    println!("parrot listening on {addr}");
+    let node = Arc::new(node);
     let parrot_id = node.fingerprint().radio_id();
+    // Held for the life of the parrot; dropping it stops advertising.
+    let _discovery = if lan {
+        let fingerprint = node.fingerprint().hex();
+        let discovery = Discovery::start(&Advert {
+            radio_id: parrot_id,
+            fingerprint: &fingerprint,
+            name: "parrot",
+            port: addr.port(),
+        })?;
+        let discovery = Arc::new(discovery);
+        tokio::spawn(dial_found(
+            Arc::clone(&node),
+            Arc::clone(&discovery),
+            fingerprint,
+        ));
+        println!("advertising on the LAN");
+        Some(discovery)
+    } else {
+        None
+    };
     while let Some(accepted) = node.accept().await {
         match accepted {
             Ok(peer) => {
-                println!(
-                    "{} at {} connected [UNTRUSTED] fingerprint {}",
-                    peer.display_name(),
-                    peer.remote_address(),
-                    peer.fingerprint()
-                );
+                announce(&peer);
                 tokio::spawn(echo(peer, parrot_id));
             }
             Err(e) => eprintln!("incoming connection failed: {e}"),
         }
     }
     Ok(())
+}
+
+fn announce(peer: &Peer) {
+    println!(
+        "{} at {} connected [UNTRUSTED] fingerprint {}",
+        peer.display_name(),
+        peer.remote_address(),
+        peer.fingerprint()
+    );
+}
+
+/// Dials LAN nodes by the same rule as talk mode: the lower fingerprint
+/// dials. Each node is dialed once per parrot run.
+async fn dial_found(node: Arc<Node>, discovery: Arc<Discovery>, own_fingerprint: String) {
+    let dialed = Mutex::new(HashSet::new());
+    while let Some(found) = discovery.next().await {
+        if own_fingerprint >= found.fingerprint
+            || !dialed.lock().unwrap().insert(found.fingerprint.clone())
+        {
+            continue;
+        }
+        if let Ok(peer) = node.connect_any(&found.addrs).await {
+            announce(&peer);
+            tokio::spawn(echo(peer, node.fingerprint().radio_id()));
+        }
+    }
 }
 
 /// A finished transmission waiting to be played back.
@@ -170,7 +219,7 @@ mod tests {
         let client = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
         let parrot_id = parrot.fingerprint().radio_id();
-        tokio::spawn(async move { run(&parrot).await.unwrap() });
+        tokio::spawn(async move { run(parrot, false).await.unwrap() });
         let peer = client.connect(parrot_addr).await.unwrap();
 
         let first = VoiceHeader {
@@ -218,7 +267,7 @@ mod tests {
         let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
         let client = Node::bind(localhost, &Identity::generate().unwrap(), "test").unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
-        tokio::spawn(async move { run(&parrot).await.unwrap() });
+        tokio::spawn(async move { run(parrot, false).await.unwrap() });
         let peer = client.connect(parrot_addr).await.unwrap();
 
         // Two transmissions back to back: 5 frames, then 1 frame.
@@ -258,7 +307,7 @@ mod control_tests {
         let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "parrot").unwrap();
         let client = Node::bind(localhost, &Identity::generate().unwrap(), "client").unwrap();
         let parrot_addr = parrot.local_addr().unwrap();
-        tokio::spawn(async move { run(&parrot).await.unwrap() });
+        tokio::spawn(async move { run(parrot, false).await.unwrap() });
         let peer = client.connect(parrot_addr).await.unwrap();
 
         for (sequence, end) in [(0u16, false), (1, true)] {

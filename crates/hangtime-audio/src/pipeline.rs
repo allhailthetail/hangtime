@@ -182,6 +182,8 @@ impl TxWorker {
 /// Receive-side measurements for one transmission, reported when it ends.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReceiveStats {
+    /// Radio ID of the talker.
+    pub sender: u32,
     /// Frames the sender sent, from sequence numbers.
     pub sent: u32,
     /// Sent frames that never arrived.
@@ -231,6 +233,7 @@ impl StatsAccumulator {
     fn finish(&mut self) -> Option<ReceiveStats> {
         let finished = std::mem::take(self);
         (finished.played > 0).then(|| ReceiveStats {
+            sender: finished.key.map_or(0, |(sender, _)| sender),
             sent: finished.sent,
             lost: finished.sent.saturating_sub(finished.received),
             jitter: finished.jitter / finished.played,
