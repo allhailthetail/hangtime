@@ -2,24 +2,33 @@
 //!
 //! Modes:
 //!
-//! - `hangtime [--port N] [--peer HOST:PORT]... [--name NAME]`: talk.
-//!   Finds peers on the LAN with mDNS and also dials each `--peer`.
+//! - `hangtime [--port N] [--peer HOST:PORT]... [--name NAME] [--mic NAME]
+//!   [--speaker NAME]`: talk. Finds peers on the LAN with mDNS and also
+//!   dials each `--peer`.
 //! - `hangtime parrot [--port N] [--lan]`: headless echo node that plays
 //!   each transmission back to its sender, for testing with one machine.
 //!   `--lan` also makes it discoverable over mDNS.
+//! - `hangtime mic-test [--mic NAME]`: record the microphone and show what
+//!   VOX hears.
+//! - `hangtime devices`: list microphones and speakers.
 
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::process::ExitCode;
 
+use hangtime_audio::list_devices;
 use hangtime_identity::Identity;
 use hangtime_transport::{DEFAULT_PORT, Node};
+use tokio::runtime::Runtime;
 
 /// One identity per install, in the user's config folder.
 const IDENTITY_FILE: &str = "hangtime-identity.key";
 
 /// Settings and talkgroups, next to the identity.
 const CONFIG_FILE: &str = "hangtime.toml";
+
+/// Where mic-test saves its recording, next to the identity.
+const MIC_TEST_FILE: &str = "hangtime-mic-test.wav";
 
 mod config;
 mod mic_test;
@@ -30,67 +39,117 @@ mod talk;
 
 const USAGE: &str = "\
 usage:
-  hangtime [--port N] [--peer HOST:PORT]... [--name NAME]
+  hangtime [--port N] [--peer HOST:PORT]... [--name NAME] [--mic NAME] [--speaker NAME]
       talk; finds peers on the LAN, and dials each --peer
   hangtime parrot [--port N] [--lan]
       echo each transmission back to its sender (--lan: discoverable)
-  hangtime mic-test
-      record the microphone for 10 s and show what VOX hears";
+  hangtime mic-test [--mic NAME]
+      record the microphone for 10 s and show what VOX hears
+  hangtime devices
+      list microphones and speakers (names for --mic and --speaker)
 
+--mic and --speaker match a device name, or any name containing the text,
+ignoring case. If it isn't available, Hangtime uses the default device.";
+
+#[derive(Debug, PartialEq)]
 enum Mode {
     Talk { peers: Vec<SocketAddr> },
     Parrot { lan: bool },
+    MicTest,
+    Devices,
 }
 
+#[derive(Debug)]
 struct Args {
     mode: Mode,
     port: Option<u16>,
     name: Option<String>,
+    mic: Option<String>,
+    speaker: Option<String>,
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
-    let mut parrot = false;
+    let mut command = None;
     let mut lan = false;
     let mut port = None;
     let mut peers = Vec::new();
     let mut name = None;
+    let mut mic = None;
+    let mut speaker = None;
     while let Some(arg) = args.next() {
+        let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
-            "parrot" => parrot = true,
+            "parrot" | "mic-test" | "devices" if command.is_none() => command = Some(arg),
             "--lan" => lan = true,
             "--port" => {
-                let value = args.next().ok_or("--port needs a value")?;
-                port = Some(value.parse().map_err(|_| format!("bad port: {value}"))?);
+                let text = value("--port")?;
+                port = Some(text.parse().map_err(|_| format!("bad port: {text}"))?);
             }
             "--peer" => {
-                let value = args.next().ok_or("--peer needs HOST:PORT")?;
-                let addr = value
+                let text = value("--peer")?;
+                let addr = text
                     .to_socket_addrs()
-                    .map_err(|e| format!("bad peer {value}: {e}"))?
+                    .map_err(|e| format!("bad peer {text}: {e}"))?
                     .next()
-                    .ok_or_else(|| format!("peer {value} did not resolve"))?;
+                    .ok_or_else(|| format!("peer {text} did not resolve"))?;
                 peers.push(addr);
             }
-            "--name" => name = Some(args.next().ok_or("--name needs a value")?),
+            "--name" => name = Some(value("--name")?),
+            "--mic" => mic = Some(value("--mic")?),
+            "--speaker" => speaker = Some(value("--speaker")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
-    let mode = match (parrot, peers.is_empty()) {
-        (true, false) => return Err("parrot does not take --peer".into()),
-        (true, true) => Mode::Parrot { lan },
-        (false, _) if lan => {
-            return Err("--lan is for parrot; talk mode always uses the LAN".into());
-        }
-        (false, _) => Mode::Talk { peers },
+    // Reject flags that mean nothing in the chosen mode, so typos show up.
+    let unused = |flags: &[(&str, bool)]| match flags.iter().find(|(_, given)| *given) {
+        Some((flag, _)) => Err(format!("{flag} doesn't apply here")),
+        None => Ok(()),
     };
-    Ok(Args { mode, port, name })
+    let mode = match command.as_deref() {
+        None => {
+            unused(&[("--lan (it's for parrot)", lan)])?;
+            Mode::Talk { peers }
+        }
+        Some("parrot") => {
+            unused(&[
+                ("--peer", !peers.is_empty()),
+                ("--mic", mic.is_some()),
+                ("--speaker", speaker.is_some()),
+            ])?;
+            Mode::Parrot { lan }
+        }
+        Some("mic-test") => {
+            unused(&[
+                ("--peer", !peers.is_empty()),
+                ("--lan", lan),
+                ("--port", port.is_some()),
+                ("--name", name.is_some()),
+                ("--speaker", speaker.is_some()),
+            ])?;
+            Mode::MicTest
+        }
+        _ => {
+            unused(&[
+                ("--peer", !peers.is_empty()),
+                ("--lan", lan),
+                ("--port", port.is_some()),
+                ("--name", name.is_some()),
+                ("--mic", mic.is_some()),
+                ("--speaker", speaker.is_some()),
+            ])?;
+            Mode::Devices
+        }
+    };
+    Ok(Args {
+        mode,
+        port,
+        name,
+        mic,
+        speaker,
+    })
 }
 
 fn main() -> ExitCode {
-    // mic-test needs no identity, network, or settings.
-    if std::env::args().nth(1).as_deref() == Some("mic-test") {
-        return exit(run_mic_test());
-    }
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -98,11 +157,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    exit(run(args))
-}
-
-fn exit(result: Result<(), Box<dyn Error>>) -> ExitCode {
-    match result {
+    match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
@@ -111,65 +166,105 @@ fn exit(result: Result<(), Box<dyn Error>>) -> ExitCode {
     }
 }
 
-fn run_mic_test() -> Result<(), Box<dyn Error>> {
-    let path =
-        Identity::default_path("hangtime-mic-test.wav").ok_or("no user config folder found")?;
-    mic_test::run(&path)
-}
-
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    println!("hangtime {}", env!("CARGO_PKG_VERSION"));
-    let identity = match args.mode {
-        Mode::Talk { .. } => {
-            let path =
-                Identity::default_path(IDENTITY_FILE).ok_or("no user config folder found")?;
+    match args.mode {
+        Mode::Devices => {
+            print_devices();
+            Ok(())
+        }
+        Mode::MicTest => {
+            let config = load_config()?;
+            let path = config_path(MIC_TEST_FILE)?;
+            mic_test::run(&path, args.mic.or(config.microphone).as_deref())
+        }
+        Mode::Parrot { lan } => {
+            println!("hangtime {}", env!("CARGO_PKG_VERSION"));
+            // The parrot is a test tool: a temporary identity keeps it from
+            // sharing this install's radio ID.
+            let identity = Identity::generate()?;
+            let name = args.name.unwrap_or_else(|| "parrot".into());
+            let runtime = Runtime::new()?;
+            let node = bind(
+                &runtime,
+                &identity,
+                &name,
+                args.port.unwrap_or(DEFAULT_PORT),
+                None,
+            )?;
+            runtime.block_on(parrot::run(node, lan))
+        }
+        Mode::Talk { peers } => {
+            println!("hangtime {}", env!("CARGO_PKG_VERSION"));
+            let path = config_path(IDENTITY_FILE)?;
             let identity = Identity::load_or_create(&path)?;
             println!("identity {}", path.display());
-            identity
-        }
-        // The parrot is a test tool: a temporary identity keeps it from
-        // sharing this install's radio ID.
-        Mode::Parrot { .. } => Identity::generate()?,
-    };
-    let config = match args.mode {
-        Mode::Talk { .. } => {
-            let path = Identity::default_path(CONFIG_FILE).ok_or("no user config folder found")?;
-            println!("settings {}", path.display());
-            config::load_or_create(&path)?
-        }
-        Mode::Parrot { .. } => config::Config::default(),
-    };
-    let name = match (&args.mode, args.name, config.name) {
-        (_, Some(name), _) | (Mode::Talk { .. }, None, Some(name)) => name,
-        (Mode::Talk { .. }, None, None) => default_name(),
-        (Mode::Parrot { .. }, None, _) => "parrot".into(),
-    };
-    println!("name {name}");
-    let node = {
-        let _guard = runtime.enter();
-        let bind = |port| Node::bind(SocketAddr::from(([0, 0, 0, 0], port)), &identity, &name);
-        match (&args.mode, args.port) {
-            (_, Some(port)) => bind(port)?,
-            (Mode::Parrot { .. }, None) => bind(DEFAULT_PORT)?,
+            let config = load_config()?;
+            let name = args.name.or(config.name).unwrap_or_else(default_name);
+            let runtime = Runtime::new()?;
             // Talk mode prefers the default port but takes any free one
             // (mDNS advertises whichever it gets), so it can run beside a
             // parrot on the same machine.
-            (Mode::Talk { .. }, None) => bind(DEFAULT_PORT).or_else(|_| bind(0))?,
+            let fallback_port = args.port.is_none().then_some(0);
+            let port = args.port.unwrap_or(DEFAULT_PORT);
+            let node = bind(&runtime, &identity, &name, port, fallback_port)?;
+            talk::run(
+                &runtime,
+                node,
+                talk::Options {
+                    peers,
+                    name,
+                    groups: config.groups,
+                    vox: config.vox,
+                    vox_sensitivity: config.vox_sensitivity,
+                    microphone: args.mic.or(config.microphone),
+                    speaker: args.speaker.or(config.speaker),
+                },
+            )
         }
+    }
+}
+
+/// Binds the node on `port`, or on `fallback` if that fails.
+fn bind(
+    runtime: &Runtime,
+    identity: &Identity,
+    name: &str,
+    port: u16,
+    fallback: Option<u16>,
+) -> Result<Node, Box<dyn Error>> {
+    let _guard = runtime.enter();
+    let at = |port: u16| Node::bind(SocketAddr::from(([0, 0, 0, 0], port)), identity, name);
+    let node = match (at(port), fallback) {
+        (Ok(node), _) => node,
+        (Err(_), Some(fallback)) => at(fallback)?,
+        (Err(e), None) => return Err(e.into()),
     };
+    println!("name {name}");
     println!("this node's fingerprint {}", node.fingerprint());
-    match args.mode {
-        Mode::Talk { peers } => talk::run(
-            &runtime,
-            node,
-            peers,
-            &name,
-            config.groups,
-            config.vox,
-            config.vox_sensitivity,
-        ),
-        Mode::Parrot { lan } => runtime.block_on(parrot::run(node, lan)),
+    Ok(node)
+}
+
+fn config_path(file: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    Ok(Identity::default_path(file).ok_or("no user config folder found")?)
+}
+
+fn load_config() -> Result<config::Config, Box<dyn Error>> {
+    let path = config_path(CONFIG_FILE)?;
+    println!("settings {}", path.display());
+    Ok(config::load_or_create(&path)?)
+}
+
+fn print_devices() {
+    let (inputs, outputs) = list_devices();
+    for (heading, devices) in [("microphones", inputs), ("speakers", outputs)] {
+        println!("{heading}:");
+        if devices.is_empty() {
+            println!("  (none found)");
+        }
+        for device in devices {
+            let marker = if device.is_default { "  (default)" } else { "" };
+            println!("  {}{marker}", device.name);
+        }
     }
 }
 
@@ -190,27 +285,57 @@ mod tests {
     }
 
     #[test]
-    fn parses_talk_with_peers() {
-        let args = parse(&["--peer", "127.0.0.1:4747", "--peer", "127.0.0.1:4748"]).unwrap();
+    fn parses_talk_with_peers_and_devices() {
+        let args = parse(&[
+            "--peer",
+            "127.0.0.1:4747",
+            "--peer",
+            "127.0.0.1:4748",
+            "--mic",
+            "WH-1000XM4",
+            "--speaker",
+            "Headset",
+        ])
+        .unwrap();
         let Mode::Talk { peers } = args.mode else {
             panic!("not talk mode");
         };
         assert_eq!(peers.len(), 2);
+        assert_eq!(args.mic.as_deref(), Some("WH-1000XM4"));
+        assert_eq!(args.speaker.as_deref(), Some("Headset"));
         assert_eq!(args.port, None);
     }
 
     #[test]
     fn parses_parrot_with_port() {
         let args = parse(&["parrot", "--port", "5000", "--lan"]).unwrap();
-        assert!(matches!(args.mode, Mode::Parrot { lan: true }));
+        assert_eq!(args.mode, Mode::Parrot { lan: true });
         assert_eq!(args.port, Some(5000));
     }
 
     #[test]
+    fn parses_mic_test_and_devices() {
+        let args = parse(&["mic-test", "--mic", "xm4"]).unwrap();
+        assert_eq!(args.mode, Mode::MicTest);
+        assert_eq!(args.mic.as_deref(), Some("xm4"));
+        assert_eq!(parse(&["devices"]).unwrap().mode, Mode::Devices);
+    }
+
+    #[test]
     fn rejects_bad_input() {
-        assert!(parse(&["--port", "x"]).is_err());
-        assert!(parse(&["parrot", "--peer", "127.0.0.1:1"]).is_err());
-        assert!(parse(&["--bogus"]).is_err());
-        assert!(parse(&["--lan"]).is_err());
+        let bad: &[&[&str]] = &[
+            &["--port", "x"],
+            &["parrot", "--peer", "127.0.0.1:1"],
+            &["parrot", "--mic", "x"],
+            &["--bogus"],
+            &["--lan"],
+            &["mic-test", "--speaker", "x"],
+            &["devices", "--mic", "x"],
+            &["--mic"],
+            &["parrot", "devices"],
+        ];
+        for args in bad {
+            assert!(parse(args).is_err(), "accepted {args:?}");
+        }
     }
 }

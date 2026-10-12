@@ -16,10 +16,13 @@ const SECONDS: usize = 10;
 /// Frames per summary line (0.5 s).
 const SUMMARY_FRAMES: usize = 25;
 
-pub fn run(wav_path: &Path) -> Result<(), Box<dyn Error>> {
-    let (capture, mut mic) = Capture::open_default()?;
+pub fn run(wav_path: &Path, microphone: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let (capture, mut mic) = Capture::open(microphone)?;
     let rate = capture.device_rate();
     println!("microphone: {}", capture.description());
+    if let Some(notice) = capture.notice() {
+        println!("note: {notice}");
+    }
     println!();
     println!("Recording {SECONDS} s.");
     println!("  First 5 s: tap the desk like before, without talking.");

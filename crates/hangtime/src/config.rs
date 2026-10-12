@@ -23,6 +23,13 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 # with V while running. A headset avoids the speaker setting off VOX.
 # vox = true
 
+# Microphone and speaker to use, by name or part of a name (ignoring
+# case). Run "hangtime devices" to see the names. If the device isn't
+# available, Hangtime falls back to the Windows default. --mic and
+# --speaker override these for one run.
+# microphone = "WH-1000XM4"
+# speaker = "WH-1000XM4"
+
 # VOX sensitivity, 1 (least) to 5 (most). Lower it if taps or room noise
 # key the radio; raise it if speech is missed. Adjust live with + and -.
 # vox_sensitivity = 3
@@ -49,6 +56,8 @@ pub struct Config {
     pub name: Option<String>,
     pub vox: bool,
     pub vox_sensitivity: Option<u8>,
+    pub microphone: Option<String>,
+    pub speaker: Option<String>,
     /// Configured talkgroups, not including All Call.
     pub groups: Vec<Group>,
 }
@@ -60,6 +69,8 @@ struct File {
     #[serde(default)]
     vox: bool,
     vox_sensitivity: Option<u8>,
+    microphone: Option<String>,
+    speaker: Option<String>,
     #[serde(default, rename = "group")]
     groups: Vec<GroupEntry>,
 }
@@ -128,6 +139,8 @@ fn parse(text: &str) -> Result<Config, String> {
         name: file.name,
         vox: file.vox,
         vox_sensitivity: file.vox_sensitivity,
+        microphone: file.microphone.filter(|name| !name.trim().is_empty()),
+        speaker: file.speaker.filter(|name| !name.trim().is_empty()),
         groups,
     })
 }
@@ -150,6 +163,7 @@ mod tests {
             name = "Desk"
             vox = true
             vox_sensitivity = 2
+            microphone = "WH-1000XM4"
             [[group]]
             name = "Ops"
             id = 100
@@ -163,6 +177,8 @@ mod tests {
         assert_eq!(config.name.as_deref(), Some("Desk"));
         assert!(config.vox);
         assert_eq!(config.vox_sensitivity, Some(2));
+        assert_eq!(config.microphone.as_deref(), Some("WH-1000XM4"));
+        assert_eq!(config.speaker, None);
         assert_eq!(config.groups.len(), 2);
         assert_eq!(config.groups[0].key.as_deref(), Some("secret"));
         assert_eq!(config.groups[1].key, None);

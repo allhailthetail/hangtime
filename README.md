@@ -78,7 +78,15 @@ hangtime --peer 192.168.1.20:4747 # also dial a peer by address
 hangtime --name "Desk"            # name shown to others
 hangtime parrot                   # echo node for testing alone
 hangtime parrot --lan             # echo node, discoverable on the LAN
+hangtime devices                  # list microphones and speakers
+hangtime --mic "WH-1000XM4"       # use a specific microphone
+hangtime mic-test                 # see what VOX hears from your mic
 ```
+
+`--mic` and `--speaker` (or `microphone` and `speaker` in
+`hangtime.toml`) take a device name or part of one, ignoring case. If
+that device isn't available, Hangtime says so and uses the Windows
+default, then any other device that works.
 
 Hold SPACE to talk and press Q to quit. Press V for VOX, where talking
 keys the radio with no SPACE needed (a headset keeps the speaker from

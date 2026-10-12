@@ -33,23 +33,40 @@ struct Shared {
     dialing: Mutex<HashSet<String>>,
 }
 
-pub fn run(
-    runtime: &Runtime,
-    node: Node,
-    static_peers: Vec<SocketAddr>,
-    name: &str,
-    groups: Vec<Group>,
-    vox: bool,
-    vox_sensitivity: Option<u8>,
-) -> Result<(), Box<dyn Error>> {
+/// Talk-mode settings, from the command line and `hangtime.toml`.
+pub struct Options {
+    pub peers: Vec<SocketAddr>,
+    pub name: String,
+    pub groups: Vec<Group>,
+    pub vox: bool,
+    pub vox_sensitivity: Option<u8>,
+    /// Preferred microphone and speaker names; `None` for the default.
+    pub microphone: Option<String>,
+    pub speaker: Option<String>,
+}
+
+pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dyn Error>> {
+    let Options {
+        peers: static_peers,
+        name,
+        groups,
+        vox,
+        vox_sensitivity,
+        microphone,
+        speaker: speaker_name,
+    } = options;
+    let name = name.as_str();
     let me = node.fingerprint().radio_id();
     let port = node.local_addr()?.port();
     println!("listening on port {port}");
 
-    let (capture, mic) = Capture::open_default()?;
-    let (playback, speaker) = Playback::open_default()?;
+    let (capture, mic) = Capture::open(microphone.as_deref())?;
+    let (playback, speaker) = Playback::open(speaker_name.as_deref())?;
     println!("microphone {}", capture.description());
     println!("speaker {}", playback.description());
+    for notice in [capture.notice(), playback.notice()].into_iter().flatten() {
+        println!("note: {notice}");
+    }
     let members = Arc::new(Members::default());
     let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;

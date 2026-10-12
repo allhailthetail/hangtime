@@ -17,7 +17,7 @@ mod tones;
 mod vox;
 
 pub use codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
-pub use device::{Capture, DeviceLatency, Playback};
+pub use device::{Capture, DeviceInfo, DeviceLatency, Playback, list_devices};
 pub use hangtime_proto::FRAME_DURATION;
 pub use jitter::{JitterBuffer, Playout};
 pub use pipeline::{Inbox, PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
@@ -34,8 +34,10 @@ pub const FRAME_SAMPLES: usize = 960;
 
 #[derive(Debug)]
 pub enum AudioError {
-    /// No default input or output device.
+    /// No input or output device found.
     NoDevice,
+    /// Devices exist but none could be opened; lists each failure.
+    NoUsableDevice(String),
     /// The device only offers a sample format we don't handle.
     UnsupportedFormat(cpal::SampleFormat),
     Device(cpal::Error),
@@ -46,7 +48,10 @@ pub enum AudioError {
 impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoDevice => write!(f, "no default audio device"),
+            Self::NoDevice => write!(f, "no audio device found"),
+            Self::NoUsableDevice(failures) => {
+                write!(f, "no audio device could be opened: {failures}")
+            }
             Self::UnsupportedFormat(format) => write!(f, "unsupported sample format {format}"),
             Self::Device(e) => write!(f, "audio device: {e}"),
             Self::Codec(e) => write!(f, "opus: {e}"),
