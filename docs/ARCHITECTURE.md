@@ -119,6 +119,8 @@ QUIC via `quinn` ([ADR-0002](decisions/0002-quic-transport.md)):
 - One UDP port per node, which keeps firewall rules simple.
 - TLS 1.3 from QUIC provides encryption. Certificates are self-signed
   and pinned to the node's Ed25519 key, so there is no PKI to run.
+  Until identities exist, any certificate is accepted and shown as
+  untrusted ([ADR-0007](decisions/0007-phase-1-connection-setup.md)).
 
 The wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 
@@ -233,7 +235,7 @@ regardless of which source found them.
   low-level keyboard hook (`WH_KEYBOARD_LL`). Mouse side buttons and USB
   foot pedals (which usually appear as HID keyboards) should work too.
 - **UI:** created on demand and destroyed when hidden, so idle memory
-  stays low ([ADR-0005](decisions/0005-ui-toolkit.md)).
+  stays low ([ADR-0005](decisions/0005-slint-ui-toolkit.md)).
 - **Audio cues are part of the UX.** Tones tell the user what is
   happening without looking at the screen.
 
@@ -256,7 +258,9 @@ why the wire figure is about double the codec bitrate.
 ## Roadmap
 
 1. **Two peers, one LAN:** cpal to Opus to QUIC datagrams to playback.
-   PTT only, manual peer address. Measure mouth-to-ear latency.
+   PTT only, manual peer address. Measure mouth-to-ear latency. A
+   headless parrot node echoes transmissions back so this can be tested
+   from one machine.
 1. **Groups and floor control:** mDNS discovery, talkgroups with group
    keys, floor arbitration, hang timer, time-out timer, tones.
 1. **VOX and squelch:** noise suppression, VAD with pre-roll and VOX

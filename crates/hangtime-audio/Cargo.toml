@@ -1,0 +1,15 @@
+[package]
+name = "hangtime-audio"
+description = "Hangtime audio pipeline: capture, Opus, playback"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+cpal = "0.18"
+hangtime-proto = { version = "0.1.0", path = "../hangtime-proto" }
+opus = "0.4"
+rtrb = "0.4"
+

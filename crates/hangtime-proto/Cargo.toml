@@ -1,0 +1,9 @@
+[package]
+name = "hangtime-proto"
+description = "Hangtime wire protocol: datagram header and control messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+

@@ -18,23 +18,56 @@ on the wire. Client and server code must match it.
 
 ## Connection setup
 
-TODO: QUIC ALPN identifier, certificate pinning to the Ed25519 key,
-version negotiation, and the hello exchange (radio ID, capabilities,
-display name).
+Rationale is in
+[ADR-0007](decisions/0007-phase-1-connection-setup.md).
+
+- **ALPN:** `hangtime/1`. The suffix is the protocol major version, so
+  version negotiation is ALPN negotiation: a node that speaks several
+  major versions offers each, and peers with no version in common fail
+  the handshake.
+- **TLS:** TLS 1.3 (required by QUIC). Both sides present a self-signed
+  certificate (mutual TLS). Handshake signatures are verified, so a peer
+  must hold the private key for its certificate.
+- **Trust (phase 1):** any certificate is accepted. Nodes identify a
+  peer by the SHA-256 fingerprint of its certificate and show it as
+  untrusted until the user confirms it. Pinning to the Ed25519 identity
+  key replaces this when identities land.
+- **Datagrams:** both sides enable QUIC datagrams (RFC 9221).
+
+TODO: the `HELLO` exchange (radio ID, capabilities, display name) and
+control stream framing, designed together with the other control
+messages in phase 2.
 
 ## Voice datagram
 
-TODO: final field sizes. Proposed fields:
+Each QUIC datagram carries one voice frame: a fixed 16-byte header
+followed by the payload. Rationale is in
+[ADR-0006](decisions/0006-voice-datagram-header.md).
 
-| Field | Purpose |
-| --- | --- |
-| Version / flags | Format version; flags such as end-of-transmission |
-| Group ID | Talkgroup or private-call identifier |
-| Sender radio ID | Who is talking |
-| Transmission ID | Distinguishes successive key-ups |
-| Sequence number | Loss detection and ordering |
-| Timestamp | Jitter buffer timing, in 20 ms frame units |
-| Payload | One Opus frame, encrypted with the group key if scoped |
+| Offset | Size | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 1 | Version | Datagram format version. Currently `1`. |
+| 1 | 1 | Flags | Bit 0: end of transmission. Bits 1-7 reserved. |
+| 2 | 4 | Group ID | Talkgroup or private-call identifier |
+| 6 | 4 | Sender radio ID | Radio ID of the talker |
+| 10 | 2 | Transmission ID | Incremented on each key-up; wraps |
+| 12 | 2 | Sequence | Starts at 0 at key-up; +1 per datagram sent |
+| 14 | 2 | Timestamp | Starts at 0 at key-up; counts 20 ms frames |
+| 16 | rest | Payload | One Opus frame, encrypted with the group key if scoped |
+
+Rules:
+
+- Senders set reserved flag bits to 0. Receivers ignore them.
+- Receivers drop datagrams shorter than 16 bytes, and datagrams whose
+  version they do not support.
+- With DTX, frames are not sent during silence, so the timestamp can
+  jump ahead while the sequence stays contiguous. Sequence gaps mean
+  loss; timestamp gaps alone do not.
+- A datagram with the end-of-transmission flag set may have an empty
+  payload.
+- How radio IDs derive from the Ed25519 key and how group IDs are
+  assigned are defined with identity and talkgroups (see Connection
+  setup and Control messages).
 
 ## Control messages
 
