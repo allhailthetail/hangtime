@@ -4,7 +4,7 @@ All notable changes to Hangtime. Versions follow
 [semantic versioning](https://semver.org); the wire protocol has its
 own version (ALPN `hangtime/2`, see `docs/PROTOCOL.md`).
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-12)
 
 First release, for Windows x64 on a shared network.
 

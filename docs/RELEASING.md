@@ -16,7 +16,7 @@ static linking requires).
 1. Build the package from a clean tree on `main`:
 
    ```powershell
-   .\scripts\package.ps1
+   pwsh .\scripts\package.ps1
    ```
 
    It runs format, clippy, and tests, builds the release exe, checks
