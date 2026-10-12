@@ -1,9 +1,10 @@
 //! The radio: ties floor control to the transmitter, peers, talkgroups,
 //! and the status line.
 //!
-//! The radio monitors All Call plus the selected talkgroup, and transmits
-//! on the selected one. Each monitored group has its own floor. Until the
-//! scan list arrives, one received transmission plays at a time.
+//! Scan list: the radio monitors every configured group, each with its
+//! own floor, and transmits on the selected one. Only the selected group
+//! and All Call are audible, one transmission at a time; activity on the
+//! other groups shows as a level bar and talker name.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
@@ -11,8 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use hangtime_audio::{
-    Inbox, Tone, Transmitter, VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN,
-    VoxEvent,
+    FRAME_SAMPLES, Inbox, Tone, Transmitter, VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX,
+    VOX_SENSITIVITY_MIN, VoiceDecoder, VoxEvent, level_db, min_level_db,
 };
 use hangtime_proto::{ALL_CALL, ControlMessage, VoiceHeader};
 use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, Group, KeyUpOutcome};
@@ -116,21 +117,6 @@ impl Members {
         }
     }
 
-    /// Sends a control message to every peer.
-    fn broadcast(&self, message: &ControlMessage) {
-        for member in self.0.lock().unwrap().iter() {
-            let _ = member.peer.send_control(message);
-        }
-    }
-
-    /// Sends every peer a `JOIN` for `group`, with a proof made for that
-    /// peer if the group has a key.
-    fn join_all(&self, group: &Group, me: &Fingerprint) {
-        for member in self.0.lock().unwrap().iter() {
-            join(&member.peer, group, me);
-        }
-    }
-
     fn name_of(&self, radio_id: u32) -> String {
         self.0
             .lock()
@@ -157,6 +143,8 @@ struct State {
     /// Index into `Radio::groups` of the group to transmit on.
     selected: usize,
     floors: HashMap<u32, Floor>,
+    /// Per group: the transmission being metered and its decoder.
+    meters: HashMap<u32, ((u32, u16), VoiceDecoder)>,
 }
 
 pub struct Radio {
@@ -194,13 +182,17 @@ impl Radio {
             key: None,
         }];
         groups.extend(configured);
-        let floors = HashMap::from([(ALL_CALL, Floor::new(me.radio_id(), FloorConfig::default()))]);
+        let floors = groups
+            .iter()
+            .map(|group| (group.id, Floor::new(me.radio_id(), FloorConfig::default())))
+            .collect();
         Arc::new(Self {
             me,
             groups,
             state: Mutex::new(State {
                 selected: 0,
                 floors,
+                meters: HashMap::new(),
             }),
             members,
             transmitter,
@@ -218,12 +210,10 @@ impl Radio {
         if !self.members.add(peer.clone()) {
             return false;
         }
-        let fingerprint = peer.fingerprint().to_string();
         ui::add_peer(PeerRow {
             radio_id: peer.radio_id(),
             name: peer.display_name().to_string(),
             address: peer.remote_address().to_string(),
-            fingerprint: fingerprint[..9].to_string(),
         });
         let state = self.state.lock().unwrap();
         for group_id in state.floors.keys() {
@@ -297,9 +287,13 @@ impl Radio {
         let mut state = self.state.lock().unwrap();
         let group = &self.groups[state.selected];
         if keyed {
-            // Half duplex: no talking over a transmission on any group.
+            // Half duplex: no talking over a transmission you can hear.
+            // The selected group's own floor covers itself; All Call is the
+            // only other audible group.
             let receiving_elsewhere = state.floors.iter().any(|(id, floor)| {
-                *id != group.id && matches!(floor.state(), FloorState::Receiving { .. })
+                *id != group.id
+                    && *id == ALL_CALL
+                    && matches!(floor.state(), FloorState::Receiving { .. })
             });
             let id = self.next_transmission.fetch_add(1, Ordering::Relaxed);
             let floor = state
@@ -355,20 +349,9 @@ impl Radio {
             ui::notice("can't change talkgroup while transmitting");
             return;
         }
-        let old = &self.groups[state.selected];
-        if old.id != ALL_CALL {
-            self.members
-                .broadcast(&ControlMessage::Leave { group_id: old.id });
-            state.floors.remove(&old.id);
-        }
+        // Every group is already monitored; selecting only changes which
+        // one is heard and transmitted on.
         let new = &self.groups[index];
-        if new.id != ALL_CALL {
-            self.members.join_all(new, &self.me);
-            state.floors.insert(
-                new.id,
-                Floor::new(self.me.radio_id(), FloorConfig::default()),
-            );
-        }
         state.selected = index;
         ui::set_selected(index);
         ui::notice(&format!("talkgroup {}: {}", index, describe(new)));
@@ -441,29 +424,64 @@ impl Radio {
         self.deadline_changed.notify_one();
     }
 
-    /// A voice datagram arrived. Returns true if it should be played.
-    pub fn on_voice(&self, header: &VoiceHeader) -> bool {
+    /// A voice datagram arrived. Updates the group's floor and meter, and
+    /// returns true if it should be played: only the selected group and
+    /// All Call are audible, one transmission at a time.
+    pub fn on_voice(&self, header: &VoiceHeader, payload: &[u8]) -> bool {
         if !self.members.is_member(header.sender, header.group_id) {
             return false;
         }
         let mut state = self.state.lock().unwrap();
-        // One received stream at a time across groups.
-        let busy_elsewhere = state.floors.iter().any(|(id, floor)| {
-            *id != header.group_id && matches!(floor.state(), FloorState::Receiving { .. })
+        let selected = self.groups[state.selected].id;
+        let audible = |id: u32| id == ALL_CALL || id == selected;
+        let busy_elsewhere = state.floors.iter().any(|(&id, floor)| {
+            id != header.group_id
+                && audible(id)
+                && matches!(floor.state(), FloorState::Receiving { .. })
         });
         let Some(floor) = state.floors.get_mut(&header.group_id) else {
             return false;
         };
-        if busy_elsewhere {
-            return false;
-        }
         let before = floor.state();
-        let play = floor.on_voice(header.sender, header.transmission_id, Instant::now());
-        if floor.state() != before {
+        let accepted = floor.on_voice(header.sender, header.transmission_id, Instant::now());
+        let changed = floor.state() != before;
+        if accepted {
+            self.meter(&mut state, header, payload);
+        }
+        if changed {
             self.show(&state);
             self.deadline_changed.notify_one();
         }
-        play
+        accepted && audible(header.group_id) && !busy_elsewhere
+    }
+
+    /// Decodes a frame just to measure its level for the group's bar.
+    fn meter(&self, state: &mut State, header: &VoiceHeader, payload: &[u8]) {
+        if payload.is_empty() {
+            return;
+        }
+        let key = (header.sender, header.transmission_id);
+        let entry = match state.meters.entry(header.group_id) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let Ok(decoder) = VoiceDecoder::new() else {
+                    return;
+                };
+                entry.insert((key, decoder))
+            }
+        };
+        if entry.0 != key {
+            // A new transmission: start a fresh decoder.
+            if let Ok(decoder) = VoiceDecoder::new() {
+                *entry = (key, decoder);
+            }
+        }
+        let mut pcm = [0f32; FRAME_SAMPLES];
+        if entry.1.decode(payload, &mut pcm).is_ok()
+            && let Some(index) = self.groups.iter().position(|g| g.id == header.group_id)
+        {
+            ui::meter(index, level_db(&pcm));
+        }
     }
 
     /// A peer disconnected.
@@ -541,7 +559,9 @@ impl Radio {
                 FloorState::Transmitting { .. } => {
                     shown = Some((Activity::Transmitting, format!("TX  {}", name_of(group_id))));
                 }
-                FloorState::Receiving { talker, .. } if shown.is_none() => {
+                FloorState::Receiving { talker, .. }
+                    if shown.is_none() && (group_id == ALL_CALL || group_id == selected.id) =>
+                {
                     shown = Some((
                         Activity::Receiving,
                         format!(
@@ -554,6 +574,20 @@ impl Radio {
                 _ => {}
             }
         }
+        let talkers = self
+            .groups
+            .iter()
+            .map(
+                |group| match state.floors.get(&group.id).map(Floor::state) {
+                    Some(FloorState::Receiving { talker, .. }) => {
+                        Some(self.members.name_of(talker))
+                    }
+                    Some(FloorState::Transmitting { .. }) => Some("you".to_string()),
+                    _ => None,
+                },
+            )
+            .collect();
+        ui::set_talkers(talkers);
         let (activity, text) =
             shown.unwrap_or_else(|| match state.floors.get(&selected.id).map(Floor::state) {
                 Some(FloorState::Hang { .. }) => {
@@ -576,7 +610,6 @@ impl Radio {
                     (_, Some(_)) => "keyed",
                     (_, None) => "open",
                 },
-                id: (group.id != ALL_CALL).then_some(group.id),
             })
             .collect();
         let state = self.state.lock().unwrap();
@@ -586,10 +619,11 @@ impl Radio {
     }
 
     fn show_vox(&self) {
+        let level = self.vox_sensitivity.load(Ordering::SeqCst);
         ui::set_vox(
             self.vox
                 .load(Ordering::SeqCst)
-                .then(|| self.vox_sensitivity.load(Ordering::SeqCst)),
+                .then(|| (level, min_level_db(level))),
         );
     }
 }

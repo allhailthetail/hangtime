@@ -93,7 +93,8 @@ in the middle, a scrolling log, and the keys along the bottom. Hold
 SPACE to talk and press Q to quit. Press V for VOX, where talking
 keys the radio with no SPACE needed (a headset keeps the speaker from
 setting it off); + and - adjust how easily it keys. TAB or a number
-key changes the talkgroup you talk on; you always hear All Call too.
+key changes the talkgroup you talk on and hear; every group's row
+shows who is talking and a level bar, and you always hear All Call.
 Hangtime listens on UDP port 4747 (or any free port if that is taken)
 and uses mDNS (UDP 5353) to find peers.
 

@@ -33,8 +33,10 @@ else receives, and a second key-up is refused.
 Hangtime keeps that rule ([ADR-0004](decisions/0004-floor-control.md)).
 Consequences:
 
-- Receivers handle at most one stream per talkgroup. Mixing happens
-  only across monitored groups (the scan list).
+- Receivers handle at most one stream per talkgroup, and play only
+  the selected group and All Call; other monitored groups show
+  activity without being heard
+  ([ADR-0012](decisions/0012-scan-list-hear-selected.md)).
 - Bandwidth is predictable. The talker sends N-1 copies in
   peer-to-peer mode, or one copy to a server; listeners send nothing.
 - Echo cancellation matters less, since nobody transmits while a group
@@ -104,7 +106,9 @@ The binary runs in two roles:
 1. **Decode:** Opus.
 1. **Squelch:** receive-side gate. Suppresses streams below a level
    threshold and applies per-group mute and monitor settings.
-1. **Mix:** sums at most one stream per monitored talkgroup.
+1. **Select:** plays one stream at a time from the selected group or
+   All Call. Other monitored groups are decoded only to drive level
+   bars.
 1. **Tones:** talk-permit, channel busy (bonk), courtesy tone at end of
    transmission, hang-time end.
 
@@ -151,8 +155,9 @@ The wire format is specified in [PROTOCOL.md](PROTOCOL.md).
 - **Private call:** a direct connection between two radio IDs.
   Full duplex may be allowed here as an option, since there is no
   shared floor.
-- **Scan list:** monitor several talkgroups and transmit on the
-  selected one.
+- **Scan list:** monitor every configured talkgroup and transmit on
+  the selected one. Only the selected group and All Call are heard;
+  the others show their talker and a level bar.
 
 ### Floor control
 

@@ -59,13 +59,16 @@ pub struct Transmitter {
 
 impl Transmitter {
     /// Starts the transmit thread. `send` receives each encoded datagram;
-    /// `on_vox` receives VOX decisions while VOX is on.
+    /// `on_vox` receives VOX decisions while VOX is on; `on_level`
+    /// receives each frame's microphone level (dBFS) while the thread is
+    /// active, for a level meter.
     pub fn spawn(
         capture: Consumer<f32>,
         device_rate: u32,
         sender: u32,
         send: impl FnMut(Vec<u8>) + Send + 'static,
         on_vox: impl FnMut(VoxEvent) + Send + 'static,
+        on_level: impl FnMut(f32) + Send + 'static,
     ) -> Result<Self, AudioError> {
         let encoder = VoiceEncoder::new()?;
         let shared = Arc::new(TxShared {
@@ -87,6 +90,7 @@ impl Transmitter {
             preroll: VecDeque::with_capacity(PREROLL_FRAMES + 1),
             send: Box::new(send),
             on_vox: Box::new(on_vox),
+            on_level: Box::new(on_level),
             sender,
         };
         let thread = thread::Builder::new()
@@ -158,6 +162,7 @@ struct TxWorker {
     preroll: VecDeque<[f32; FRAME_SAMPLES]>,
     send: Box<dyn FnMut(Vec<u8>) + Send>,
     on_vox: Box<dyn FnMut(VoxEvent) + Send>,
+    on_level: Box<dyn FnMut(f32) + Send>,
     sender: u32,
 }
 
@@ -198,6 +203,7 @@ impl TxWorker {
             for frame in &mut frames {
                 let mut frame: [f32; FRAME_SAMPLES] = frame.try_into().expect("exact chunk");
                 let level = vox::level_db(&frame);
+                (self.on_level)(level);
                 let speech = self.denoiser.process(&mut frame);
                 self.vox
                     .set_sensitivity(self.shared.vox_sensitivity.load(Ordering::Relaxed));
@@ -571,6 +577,7 @@ mod tests {
                 inbox.datagram(datagram);
             },
             |_| {},
+            |_| {},
         )
         .unwrap();
 
@@ -611,6 +618,7 @@ mod tests {
             move |datagram: Vec<u8>| {
                 let _ = sent_tx.send(datagram);
             },
+            |_| {},
             |_| {},
         )
         .unwrap();

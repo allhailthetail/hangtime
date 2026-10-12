@@ -25,7 +25,8 @@ pub use probe::{FrameReport, VoxProbe};
 pub use resample::Resampler;
 pub use tones::Tone;
 pub use vox::{
-    VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, VoxEvent, min_level_db,
+    VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, VoxEvent, level_db,
+    min_level_db,
 };
 
 /// Internal sample rate.

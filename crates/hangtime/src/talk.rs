@@ -77,6 +77,7 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         move |event| {
             let _ = vox_tx.send(event);
         },
+        ui::mic_level,
     )?;
     let radio = Radio::new(
         node.fingerprint(),
@@ -248,10 +249,10 @@ async fn serve(shared: Arc<Shared>, peer: Peer) {
     };
     let voice = async {
         while let Ok(datagram) = peer.recv_voice().await {
-            let Ok((header, _)) = VoiceHeader::decode(&datagram) else {
+            let Ok((header, payload)) = VoiceHeader::decode(&datagram) else {
                 continue;
             };
-            if radio.on_voice(&header) && !shared.inbox.datagram(datagram.to_vec()) {
+            if radio.on_voice(&header, payload) && !shared.inbox.datagram(datagram.to_vec()) {
                 return;
             }
         }
