@@ -5,6 +5,9 @@
 //! own floor, and transmits on the selected one. Only the selected group
 //! and All Call are audible, one transmission at a time; activity on the
 //! other groups shows as a level bar and talker name.
+//!
+//! The last group is the built-in parrot ([`PARROT`]): local only, it
+//! plays each of your transmissions back to you.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
@@ -20,7 +23,12 @@ use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, Group, KeyUpO
 use hangtime_transport::{Fingerprint, Peer};
 use tokio::sync::Notify;
 
+use crate::echo::PARROT_TALKER;
 use crate::ui::{self, Activity, GroupRow, PeerRow};
+
+/// Group ID of the built-in parrot. `0` is reserved on the wire, so no
+/// peer can join it; it never leaves this machine.
+pub const PARROT: u32 = 0;
 
 /// A connected peer and the groups it has proven membership of.
 struct Member {
@@ -182,6 +190,11 @@ impl Radio {
             key: None,
         }];
         groups.extend(configured);
+        groups.push(Group {
+            id: PARROT,
+            name: "Parrot".into(),
+            key: None,
+        });
         let floors = groups
             .iter()
             .map(|group| (group.id, Floor::new(me.radio_id(), FloorConfig::default())))
@@ -217,7 +230,9 @@ impl Radio {
         });
         let state = self.state.lock().unwrap();
         for group_id in state.floors.keys() {
-            if let Some(group) = self.group(*group_id) {
+            if let Some(group) = self.group(*group_id)
+                && group.id != PARROT
+            {
                 join(peer, group, &self.me);
             }
         }
@@ -373,8 +388,8 @@ impl Radio {
         match message {
             ControlMessage::Join { group_id, proof } => {
                 // Joins for groups we don't know are ignored: we never
-                // transmit on them.
-                let Some(group) = self.group(group_id) else {
+                // transmit on them. The parrot is local only.
+                let Some(group) = self.group(group_id).filter(|group| group.id != PARROT) else {
                     return;
                 };
                 let joiner = peer.fingerprint();
@@ -424,13 +439,37 @@ impl Radio {
         self.deadline_changed.notify_one();
     }
 
-    /// A voice datagram arrived. Updates the group's floor and meter, and
-    /// returns true if it should be played: only the selected group and
-    /// All Call are audible, one transmission at a time.
+    /// A voice datagram arrived from a peer. Returns true if it should be
+    /// played.
     pub fn on_voice(&self, header: &VoiceHeader, payload: &[u8]) -> bool {
-        if !self.members.is_member(header.sender, header.group_id) {
-            return false;
+        self.members.is_member(header.sender, header.group_id) && self.hear(header, payload)
+    }
+
+    /// A frame of a parrot replay. Returns true if it should be played.
+    pub fn on_parrot_voice(&self, header: &VoiceHeader, payload: &[u8]) -> bool {
+        self.hear(header, payload)
+    }
+
+    /// The parrot starts or ends a replay, as a peer's `KEYUP` or
+    /// `KEYDOWN` would.
+    pub fn parrot_keyed(&self, keyed: bool, transmission_id: u16) {
+        let now = Instant::now();
+        let mut state = self.state.lock().unwrap();
+        let floor = state.floors.get_mut(&PARROT).expect("parrot has a floor");
+        if !keyed {
+            floor.on_key_down(PARROT_TALKER, transmission_id, now);
+        } else if floor.on_key_up(PARROT_TALKER, transmission_id, now) == KeyUpOutcome::Preempted {
+            self.transmitter.key_down();
+            self.tones.tone(Tone::Bonk);
         }
+        self.show(&state);
+        self.deadline_changed.notify_one();
+    }
+
+    /// Updates the group's floor and meter for a voice frame, and returns
+    /// true if it should be played: only the selected group and All Call
+    /// are audible, one transmission at a time.
+    fn hear(&self, header: &VoiceHeader, payload: &[u8]) -> bool {
         let mut state = self.state.lock().unwrap();
         let selected = self.groups[state.selected].id;
         let audible = |id: u32| id == ALL_CALL || id == selected;
@@ -546,6 +585,15 @@ impl Radio {
         self.show(&state);
     }
 
+    /// A talker's name; the parrot's replays come from "Parrot".
+    fn name_of(&self, group_id: u32, talker: u32) -> String {
+        if group_id == PARROT && talker == PARROT_TALKER {
+            "Parrot".to_string()
+        } else {
+            self.members.name_of(talker)
+        }
+    }
+
     fn group(&self, id: u32) -> Option<&Group> {
         self.groups.iter().find(|group| group.id == id)
     }
@@ -566,7 +614,7 @@ impl Radio {
                         Activity::Receiving,
                         format!(
                             "RX  {} on {}",
-                            self.members.name_of(talker),
+                            self.name_of(group_id, talker),
                             name_of(group_id)
                         ),
                     ));
@@ -580,7 +628,7 @@ impl Radio {
             .map(
                 |group| match state.floors.get(&group.id).map(Floor::state) {
                     Some(FloorState::Receiving { talker, .. }) => {
-                        Some(self.members.name_of(talker))
+                        Some(self.name_of(group.id, talker))
                     }
                     Some(FloorState::Transmitting { .. }) => Some("you".to_string()),
                     _ => None,
@@ -607,6 +655,7 @@ impl Radio {
                 name: group.name.clone(),
                 kind: match (group.id, &group.key) {
                     (ALL_CALL, _) => "",
+                    (PARROT, _) => "echo",
                     (_, Some(_)) => "keyed",
                     (_, None) => "open",
                 },
@@ -632,6 +681,9 @@ impl Radio {
 pub fn describe(group: &Group) -> String {
     if group.id == ALL_CALL {
         return group.name.clone();
+    }
+    if group.id == PARROT {
+        return format!("{} (plays you back, local only)", group.name);
     }
     let kind = if group.key.is_some() { "keyed" } else { "open" };
     format!("{} ({}, {kind})", group.name, group.id)

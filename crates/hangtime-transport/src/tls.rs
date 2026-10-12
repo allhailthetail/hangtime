@@ -15,10 +15,10 @@ use rustls::{CertificateError, DigitallySignedStruct, DistinguishedName, Signatu
 use crate::{ALPN, SERVER_NAME, TransportError};
 
 /// How often an idle connection is pinged.
-const KEEP_ALIVE: Duration = Duration::from_secs(5);
+const KEEP_ALIVE: Duration = Duration::from_secs(3);
 
 /// How long a connection may go without hearing from the peer.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
+const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Builds the QUIC server and client configs for `identity`.
 pub(crate) fn configs(

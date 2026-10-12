@@ -1,13 +1,13 @@
 //! Talk mode: a mesh node. Accepts any number of peers, dials static
-//! peers and peers found by mDNS, and runs floor control on All Call and
-//! the selected talkgroup.
+//! peers and peers found by mDNS (redialing when a connection drops), and
+//! runs the radio: floor control on every group, plus the local parrot.
 
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hangtime_audio::{
     Capture, DeviceLatency, Inbox, PACKETIZATION_DELAY, Playback, ReceiveStats, Receiver,
@@ -18,10 +18,16 @@ use hangtime_proto::VoiceHeader;
 use hangtime_session::Group;
 use hangtime_transport::{Node, Peer};
 use tokio::runtime::Runtime;
+use tokio::sync::Notify;
 
+use crate::echo;
 use crate::ptt::{self, Input};
-use crate::radio::{Members, Radio};
+use crate::radio::{Members, PARROT, Radio};
 use crate::ui;
+
+/// First wait before redialing a lost peer; doubles up to the longest.
+const REDIAL_MIN: Duration = Duration::from_secs(1);
+const REDIAL_MAX: Duration = Duration::from_secs(30);
 
 /// Everything a connection task needs.
 struct Shared {
@@ -32,6 +38,8 @@ struct Shared {
     /// Fingerprints (hex) being dialed, so mDNS re-announcements don't
     /// start a second attempt.
     dialing: Mutex<HashSet<String>>,
+    /// Signalled whenever a peer disconnects.
+    peer_lost: Notify,
 }
 
 /// Talk-mode settings, from the command line and `hangtime.toml`.
@@ -69,11 +77,18 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
     // VOX decisions come from the transmit thread; the radio handles them
     // on the runtime.
     let (vox_tx, mut vox_rx) = tokio::sync::mpsc::unbounded_channel();
+    // Voice on the parrot group goes to the local echo, not the network.
+    let (parrot_tx, parrot_rx) = tokio::sync::mpsc::unbounded_channel();
     let transmitter = Transmitter::spawn(
         mic,
         capture.device_rate(),
         me,
-        move |datagram| tx_members.send_voice(datagram),
+        move |datagram: Vec<u8>| match VoiceHeader::decode(&datagram) {
+            Ok((header, _)) if header.group_id == PARROT => {
+                let _ = parrot_tx.send(datagram);
+            }
+            _ => tx_members.send_voice(datagram),
+        },
         move |event| {
             let _ = vox_tx.send(event);
         },
@@ -104,6 +119,13 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
     }
 
     runtime.spawn(Arc::clone(&radio).run_timers());
+    runtime.spawn(echo::run(
+        ParrotOut {
+            radio: Arc::clone(&radio),
+            inbox: receiver.inbox(),
+        },
+        parrot_rx,
+    ));
     let vox_radio = Arc::clone(&radio);
     runtime.spawn(async move {
         while let Some(event) = vox_rx.recv().await {
@@ -118,10 +140,11 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
         members,
         inbox: receiver.inbox(),
         dialing: Mutex::new(HashSet::new()),
+        peer_lost: Notify::new(),
     });
     runtime.spawn(accept_loop(Arc::clone(&shared)));
     for addr in static_peers {
-        runtime.spawn(dial(Arc::clone(&shared), vec![addr], None));
+        runtime.spawn(keep_connected(Arc::clone(&shared), vec![addr], None));
     }
     let discovery = Discovery::start(&Advert {
         radio_id: me,
@@ -151,6 +174,26 @@ pub fn run(runtime: &Runtime, node: Node, options: Options) -> Result<(), Box<dy
     drop(playback);
     drop(screen);
     Ok(())
+}
+
+/// Parrot replays go through the radio's floor, then to the speaker.
+struct ParrotOut {
+    radio: Arc<Radio>,
+    inbox: Inbox,
+}
+
+impl echo::Listener for ParrotOut {
+    fn keyed(&self, keyed: bool, transmission_id: u16) {
+        self.radio.parrot_keyed(keyed, transmission_id);
+    }
+
+    fn voice(&self, datagram: Vec<u8>) {
+        if let Ok((header, payload)) = VoiceHeader::decode(&datagram)
+            && self.radio.on_parrot_voice(&header, payload)
+        {
+            self.inbox.datagram(datagram);
+        }
+    }
 }
 
 /// The full-screen UI for the life of talk mode. Dropping it, including
@@ -196,7 +239,7 @@ async fn discover_loop(shared: Arc<Shared>, discovery: Discovery, own_fingerprin
         {
             continue;
         }
-        tokio::spawn(dial(
+        tokio::spawn(keep_connected(
             Arc::clone(&shared),
             found.addrs,
             Some(found.fingerprint),
@@ -204,36 +247,89 @@ async fn discover_loop(shared: Arc<Shared>, discovery: Discovery, own_fingerprin
     }
 }
 
-/// Connects to whichever address answers first. With `expected`, only
-/// keeps a connection to the identity that was advertised.
-async fn dial(shared: Arc<Shared>, addrs: Vec<SocketAddr>, expected: Option<String>) {
-    let result = shared.node.connect_any(&addrs).await;
+/// Keeps a peer connected: dials whichever address answers first, serves
+/// the connection until it drops, then redials with backoff.
+///
+/// A peer the user named (`expected` is `None`) is redialed for as long as
+/// Hangtime runs. A LAN peer (`expected` is its advertised fingerprint) is
+/// given up once the backoff reaches its limit; if it comes back, it
+/// announces itself again.
+async fn keep_connected(shared: Arc<Shared>, addrs: Vec<SocketAddr>, expected: Option<String>) {
+    let mut backoff = REDIAL_MIN;
+    let mut reported = false;
+    loop {
+        match shared.node.connect_any(&addrs).await {
+            Ok(peer)
+                if expected
+                    .as_ref()
+                    .is_some_and(|fp| *fp != peer.fingerprint().hex()) =>
+            {
+                peer.close("unexpected identity");
+                break;
+            }
+            Ok(peer) => {
+                let fingerprint = peer.fingerprint().hex();
+                if serve(Arc::clone(&shared), peer).await {
+                    backoff = REDIAL_MIN;
+                    reported = false;
+                } else {
+                    // Already connected the other way: wait for that
+                    // connection to end before dialing again.
+                    wait_until_gone(&shared, &fingerprint).await;
+                    continue;
+                }
+            }
+            Err(e) => {
+                // LAN nodes come and go; only report peers the user named.
+                if expected.is_none() && !reported {
+                    ui::notice(&format!(
+                        "could not reach {}: {e}; will keep trying",
+                        addrs[0]
+                    ));
+                    reported = true;
+                }
+                if expected.is_some() && backoff >= REDIAL_MAX {
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(jitter(backoff)).await;
+        backoff = (backoff * 2).min(REDIAL_MAX);
+    }
     if let Some(fp) = &expected {
         shared.dialing.lock().unwrap().remove(fp);
     }
-    match result {
-        Ok(peer)
-            if expected
-                .as_ref()
-                .is_none_or(|fp| *fp == peer.fingerprint().hex()) =>
-        {
-            serve(shared, peer).await;
+}
+
+/// Waits until no peer with this fingerprint is connected.
+async fn wait_until_gone(shared: &Shared, fingerprint: &str) {
+    loop {
+        let lost = shared.peer_lost.notified();
+        tokio::pin!(lost);
+        lost.as_mut().enable();
+        if !shared.members.has(fingerprint) {
+            return;
         }
-        Ok(peer) => peer.close("unexpected identity"),
-        // LAN nodes come and go; only report peers the user named.
-        Err(e) if expected.is_none() => {
-            ui::notice(&format!("could not reach {}: {e}", addrs[0]));
-        }
-        Err(_) => {}
+        lost.await;
     }
 }
 
+/// Scales `base` by a factor between 0.5 and 1.5, so two nodes that dial
+/// each other don't collide on every retry.
+fn jitter(base: Duration) -> Duration {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    base.mul_f64(0.5 + f64::from(nanos % 1000) / 1000.0)
+}
+
 /// Registers a connected peer and handles its control messages and voice
-/// until it disconnects. Duplicate connections are closed.
-async fn serve(shared: Arc<Shared>, peer: Peer) {
+/// until it disconnects. Returns false, closing the connection, if the
+/// peer was already connected.
+async fn serve(shared: Arc<Shared>, peer: Peer) -> bool {
     if !shared.radio.add_peer(&peer) {
         peer.close("duplicate connection");
-        return;
+        return false;
     }
     ui::notice(&format!(
         "{} joined from {} [UNTRUSTED] {}",
@@ -262,6 +358,8 @@ async fn serve(shared: Arc<Shared>, peer: Peer) {
         () = voice => {}
     }
     radio.on_peer_lost(&peer);
+    shared.peer_lost.notify_waiters();
+    true
 }
 
 /// Prints a latency estimate after each received transmission.

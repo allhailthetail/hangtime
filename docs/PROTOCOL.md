@@ -42,6 +42,9 @@ Rationale is in
   first message is not a `HELLO`, or whose `HELLO` radio ID does not
   match its identity key, is disconnected. `HELLO` must complete within
   5 seconds.
+- **Keep-alive:** both sides ping an idle connection every 3 seconds
+  and set a 10 second idle timeout. The side that dialed redials a
+  lost connection ([ADR-0013](decisions/0013-built-in-parrot-and-redial.md)).
 
 ## Voice datagram
 
@@ -118,7 +121,8 @@ fields. Text is a 1-byte length followed by UTF-8.
   have not joined it.
 - **`KEYUP` / `KEYDOWN`:** bracket each transmission. The transmission
   ID matches the voice datagrams'.
-- **Group IDs:** `0xFFFFFFFF` is All Call. `0` is reserved.
+- **Group IDs:** `0xFFFFFFFF` is All Call. `0` is reserved; clients
+  use it locally for their built-in parrot and never send it.
 
 ## Floor arbitration
 

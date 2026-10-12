@@ -31,6 +31,7 @@ const CONFIG_FILE: &str = "hangtime.toml";
 const MIC_TEST_FILE: &str = "hangtime-mic-test.wav";
 
 mod config;
+mod echo;
 mod mic_test;
 mod parrot;
 mod ptt;

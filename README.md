@@ -76,7 +76,7 @@ On Windows the release exe links the C runtime statically, so
 hangtime                          # talk; finds peers on the LAN
 hangtime --peer 192.168.1.20:4747 # also dial a peer by address
 hangtime --name "Desk"            # name shown to others
-hangtime parrot                   # echo node for testing alone
+hangtime parrot                   # headless echo node, for network tests
 hangtime parrot --lan             # echo node, discoverable on the LAN
 hangtime devices                  # list microphones and speakers
 hangtime --mic "WH-1000XM4"       # use a specific microphone
@@ -95,6 +95,9 @@ keys the radio with no SPACE needed (a headset keeps the speaker from
 setting it off); + and - adjust how easily it keys. TAB or a number
 key changes the talkgroup you talk on and hear; every group's row
 shows who is talking and a level bar, and you always hear All Call.
+The last group, Parrot, never leaves your machine: talk on it and it
+plays you back, to check your microphone, VOX, and speaker. Peers given
+with `--peer` are redialed if the connection drops.
 Hangtime listens on UDP port 4747 (or any free port if that is taken)
 and uses mDNS (UDP 5353) to find peers.
 

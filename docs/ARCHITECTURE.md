@@ -270,7 +270,8 @@ why the wire figure is about double the codec bitrate.
 1. **Two peers, one LAN:** cpal to Opus to QUIC datagrams to playback.
    PTT only, manual peer address. Measure mouth-to-ear latency. A
    headless parrot node echoes transmissions back so this can be tested
-   from one machine.
+   from one machine. (Talk mode now has a built-in local Parrot group,
+   ADR-0013.)
 1. **Groups and floor control:** mDNS discovery, talkgroups with group
    keys, floor arbitration, hang timer, time-out timer, tones.
 1. **VOX and squelch:** noise suppression, VAD with pre-roll and VOX
