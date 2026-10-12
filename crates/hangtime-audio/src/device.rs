@@ -49,6 +49,7 @@ fn store_latency(state: &StreamState, latency: Duration) {
 pub struct Capture {
     _stream: cpal::Stream,
     device_rate: u32,
+    description: String,
     state: Arc<StreamState>,
 }
 
@@ -63,6 +64,7 @@ impl Capture {
             device.default_input_config()?,
         );
         let device_rate = config.sample_rate();
+        let description = describe(&device, &config);
         let (producer, consumer) = RingBuffer::new(ring_len(device_rate));
         let state = Arc::new(StreamState::default());
         let stream = match config.sample_format() {
@@ -77,6 +79,7 @@ impl Capture {
             Self {
                 _stream: stream,
                 device_rate,
+                description,
                 state,
             },
             consumer,
@@ -86,6 +89,11 @@ impl Capture {
     /// Sample rate of the samples in the ring buffer.
     pub fn device_rate(&self) -> u32 {
         self.device_rate
+    }
+
+    /// Device name and format, for display.
+    pub fn description(&self) -> &str {
+        &self.description
     }
 
     /// True once the device has reported an error.
@@ -104,6 +112,7 @@ impl Capture {
 pub struct Playback {
     _stream: cpal::Stream,
     device_rate: u32,
+    description: String,
     state: Arc<StreamState>,
 }
 
@@ -118,6 +127,7 @@ impl Playback {
             device.default_output_config()?,
         );
         let device_rate = config.sample_rate();
+        let description = describe(&device, &config);
         let (producer, consumer) = RingBuffer::new(ring_len(device_rate));
         let state = Arc::new(StreamState::default());
         let stream = match config.sample_format() {
@@ -132,6 +142,7 @@ impl Playback {
             Self {
                 _stream: stream,
                 device_rate,
+                description,
                 state,
             },
             producer,
@@ -143,6 +154,11 @@ impl Playback {
         self.device_rate
     }
 
+    /// Device name and format, for display.
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
     /// True once the device has reported an error.
     pub fn has_failed(&self) -> bool {
         self.state.failed.load(Ordering::Relaxed)
@@ -152,6 +168,18 @@ impl Playback {
     pub fn latency(&self) -> DeviceLatency {
         DeviceLatency(Arc::clone(&self.state))
     }
+}
+
+/// "Name (48000 Hz, 2 ch)".
+fn describe(device: &Device, config: &SupportedStreamConfig) -> String {
+    let name = device
+        .description()
+        .map_or_else(|_| "unknown device".to_string(), |d| d.name().to_string());
+    format!(
+        "{name} ({} Hz, {} ch)",
+        config.sample_rate(),
+        config.channels()
+    )
 }
 
 fn ring_len(device_rate: u32) -> usize {

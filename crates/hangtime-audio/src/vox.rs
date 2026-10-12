@@ -135,6 +135,12 @@ impl Vox {
         None
     }
 
+    /// The current noise floor estimate in dBFS, once a frame has been
+    /// seen.
+    pub fn floor_db(&self) -> Option<f32> {
+        self.floor_db
+    }
+
     /// Forgets any speech in progress, without an event. Keeps the noise
     /// floor.
     pub fn reset(&mut self) {

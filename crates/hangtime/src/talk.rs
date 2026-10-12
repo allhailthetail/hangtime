@@ -48,6 +48,8 @@ pub fn run(
 
     let (capture, mic) = Capture::open_default()?;
     let (playback, speaker) = Playback::open_default()?;
+    println!("microphone {}", capture.description());
+    println!("speaker {}", playback.description());
     let members = Arc::new(Members::default());
     let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;

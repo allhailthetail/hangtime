@@ -22,6 +22,7 @@ const IDENTITY_FILE: &str = "hangtime-identity.key";
 const CONFIG_FILE: &str = "hangtime.toml";
 
 mod config;
+mod mic_test;
 mod parrot;
 mod ptt;
 mod radio;
@@ -32,7 +33,9 @@ usage:
   hangtime [--port N] [--peer HOST:PORT]... [--name NAME]
       talk; finds peers on the LAN, and dials each --peer
   hangtime parrot [--port N] [--lan]
-      echo each transmission back to its sender (--lan: discoverable)";
+      echo each transmission back to its sender (--lan: discoverable)
+  hangtime mic-test
+      record the microphone for 10 s and show what VOX hears";
 
 enum Mode {
     Talk { peers: Vec<SocketAddr> },
@@ -84,6 +87,10 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
+    // mic-test needs no identity, network, or settings.
+    if std::env::args().nth(1).as_deref() == Some("mic-test") {
+        return exit(run_mic_test());
+    }
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -91,13 +98,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(args) {
+    exit(run(args))
+}
+
+fn exit(result: Result<(), Box<dyn Error>>) -> ExitCode {
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_mic_test() -> Result<(), Box<dyn Error>> {
+    let path =
+        Identity::default_path("hangtime-mic-test.wav").ok_or("no user config folder found")?;
+    mic_test::run(&path)
 }
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
