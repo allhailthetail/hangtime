@@ -169,6 +169,11 @@ impl Peer {
         self.connection.remote_address()
     }
 
+    /// Current round-trip time estimate from QUIC.
+    pub fn rtt(&self) -> std::time::Duration {
+        self.connection.rtt()
+    }
+
     /// Sends one voice datagram. Never retransmitted.
     pub fn send_voice(&self, datagram: Vec<u8>) -> Result<(), TransportError> {
         Ok(self.connection.send_datagram(Bytes::from(datagram))?)

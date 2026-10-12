@@ -69,13 +69,40 @@ impl JitterBuffer {
         self.stream.is_some()
     }
 
+    /// Frames queued from the playout point through the newest frame
+    /// received, including gaps. Zero when idle or when playout has
+    /// caught up with the newest frame.
+    pub fn depth(&self) -> u16 {
+        let Some(stream) = &self.stream else {
+            return 0;
+        };
+        let depth = stream
+            .newest_ts
+            .wrapping_sub(stream.next_ts)
+            .wrapping_add(1);
+        if depth >= 0x8000 { 0 } else { depth }
+    }
+
+    /// True if `header` belongs to the transmission being buffered.
+    pub fn is_current(&self, header: &VoiceHeader) -> bool {
+        self.stream.as_ref().is_some_and(|s| {
+            (s.sender, s.transmission_id) == (header.sender, header.transmission_id)
+        })
+    }
+
     /// Adds a received datagram. Late, duplicate, and too-far-ahead
     /// frames are dropped, as are frames from a transmission that has
-    /// already ended.
+    /// ended or been replaced by a newer one.
     pub fn push(&mut self, header: &VoiceHeader, payload: &[u8]) {
         let key = (header.sender, header.transmission_id);
         if self.last_ended == Some(key) {
             return;
+        }
+        if let Some(old) = &self.stream
+            && (old.sender, old.transmission_id) != key
+        {
+            // One stream at a time: never switch back to the replaced one.
+            self.last_ended = Some((old.sender, old.transmission_id));
         }
         let stream = match &mut self.stream {
             Some(s) if (s.sender, s.transmission_id) == key => s,
@@ -244,6 +271,16 @@ mod tests {
     }
 
     #[test]
+    fn never_switches_back_to_replaced_transmission() {
+        let mut jb = JitterBuffer::new(1);
+        jb.push(&header(1, 0), &[1]);
+        jb.push(&header(2, 0), &[2]);
+        jb.push(&header(1, 1), &[1]);
+        assert!(jb.is_current(&header(2, 0)));
+        assert_eq!(jb.pop(), Playout::Frame(vec![2]));
+    }
+
+    #[test]
     fn ends_when_sender_goes_silent() {
         let mut jb = JitterBuffer::new(1);
         jb.push(&header(1, 0), &[0]);
@@ -252,6 +289,21 @@ mod tests {
             assert_eq!(jb.pop(), Playout::Conceal);
         }
         assert_eq!(jb.pop(), Playout::End);
+    }
+
+    #[test]
+    fn reports_depth() {
+        let mut jb = JitterBuffer::new(1);
+        assert_eq!(jb.depth(), 0);
+        jb.push(&header(1, 0), &[0]);
+        jb.push(&header(1, 2), &[2]);
+        assert_eq!(jb.depth(), 3);
+        for _ in 0..3 {
+            jb.pop();
+        }
+        assert_eq!(jb.depth(), 0);
+        jb.pop();
+        assert_eq!(jb.depth(), 0);
     }
 
     #[test]

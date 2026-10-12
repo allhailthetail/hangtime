@@ -5,12 +5,16 @@
 //! SPACE toggles transmit instead.
 
 use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::{execute, terminal};
+
+/// What the status line currently shows: true while transmitting.
+static KEYED: AtomicBool = AtomicBool::new(false);
 
 /// Runs the PTT loop until the user quits. Calls `set_ptt` on each change.
 pub fn run(mut set_ptt: impl FnMut(bool)) -> io::Result<()> {
@@ -32,10 +36,11 @@ pub fn run(mut set_ptt: impl FnMut(bool)) -> io::Result<()> {
     result
 }
 
-/// Prints a line without disturbing the status line. Safe in raw mode.
+/// Prints a line in place of the status line, then redraws the status
+/// line below it. Safe in raw mode.
 pub fn notice(message: &str) {
-    print!("\r\n{message}\r\n");
-    let _ = io::stdout().flush();
+    print!("\r{message:<20}\r\n");
+    let _ = show(KEYED.load(Ordering::Relaxed));
 }
 
 fn event_loop(hold: bool, set_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
@@ -78,6 +83,7 @@ fn event_loop(hold: bool, set_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
 }
 
 fn show(keyed: bool) -> io::Result<()> {
+    KEYED.store(keyed, Ordering::Relaxed);
     let status = if keyed {
         "[TX] transmitting"
     } else {

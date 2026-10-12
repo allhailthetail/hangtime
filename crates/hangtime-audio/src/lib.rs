@@ -13,10 +13,10 @@ mod pipeline;
 mod resample;
 
 pub use codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
-pub use device::{Capture, Playback};
+pub use device::{Capture, DeviceLatency, Playback};
 pub use hangtime_proto::FRAME_DURATION;
 pub use jitter::{JitterBuffer, Playout};
-pub use pipeline::{Receiver, Transmitter};
+pub use pipeline::{PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
 pub use resample::Resampler;
 
 /// Internal sample rate.

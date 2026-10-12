@@ -8,6 +8,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use hangtime_proto::{FRAME_DURATION, VoiceHeader};
 use hangtime_transport::{Node, Peer};
+use tokio::sync::mpsc;
 use tokio::time::{Instant, sleep, sleep_until};
 
 /// Pause between the sender unkeying and the replay starting.
@@ -35,8 +36,25 @@ pub async fn run(node: &Node) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A finished transmission waiting to be played back.
+struct Recording {
+    frames: Vec<(VoiceHeader, Bytes)>,
+    end: VoiceHeader,
+    transmission_id: u16,
+}
+
 /// Records each transmission from `peer` and replays it after it ends.
+/// Replays are queued so they never overlap: one talker per channel.
 async fn echo(peer: Peer, parrot_id: u32) {
+    let (queue, mut recordings) = mpsc::unbounded_channel::<Recording>();
+    let replay_peer = peer.clone();
+    tokio::spawn(async move {
+        while let Some(recording) = recordings.recv().await {
+            if !replay(&replay_peer, recording, parrot_id).await {
+                return;
+            }
+        }
+    });
     let mut recording: Vec<(VoiceHeader, Bytes)> = Vec::new();
     let mut current = None;
     let mut ended = None;
@@ -61,26 +79,23 @@ async fn echo(peer: Peer, parrot_id: u32) {
         }
         ended = current.take();
         replay_id = replay_id.wrapping_add(1);
-        tokio::spawn(replay(
-            peer.clone(),
-            std::mem::take(&mut recording),
-            header,
-            parrot_id,
-            replay_id,
-        ));
+        let _ = queue.send(Recording {
+            frames: std::mem::take(&mut recording),
+            end: header,
+            transmission_id: replay_id,
+        });
     }
     println!("{} disconnected", peer.remote_address());
 }
 
 /// Sends a recording back with its original frame timing, as a new
-/// transmission from the parrot.
-async fn replay(
-    peer: Peer,
-    mut frames: Vec<(VoiceHeader, Bytes)>,
-    end: VoiceHeader,
-    parrot_id: u32,
-    transmission_id: u16,
-) {
+/// transmission from the parrot. Returns false if the peer is gone.
+async fn replay(peer: &Peer, recording: Recording, parrot_id: u32) -> bool {
+    let Recording {
+        mut frames,
+        end,
+        transmission_id,
+    } = recording;
     sleep(REPLAY_DELAY).await;
     frames.sort_by_key(|(header, _)| header.timestamp);
     let start = Instant::now();
@@ -96,7 +111,7 @@ async fn replay(
         let mut datagram = header.encode().to_vec();
         datagram.extend_from_slice(&payload);
         if peer.send_voice(datagram).is_err() {
-            return;
+            return false;
         }
         sequence = sequence.wrapping_add(1);
     }
@@ -107,7 +122,7 @@ async fn replay(
         sequence,
         ..end
     };
-    let _ = peer.send_voice(end.encode().to_vec());
+    peer.send_voice(end.encode().to_vec()).is_ok()
 }
 
 #[cfg(test)]
@@ -168,5 +183,38 @@ mod tests {
             assert_ne!((header.sender, header.transmission_id), (1, 5));
         }
         assert!(echoed[2].0.end_of_transmission);
+    }
+
+    #[tokio::test]
+    async fn queues_replays_without_overlap() {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let parrot = Node::bind(localhost).unwrap();
+        let client = Node::bind(localhost).unwrap();
+        let parrot_addr = parrot.local_addr().unwrap();
+        tokio::spawn(async move { run(&parrot).await.unwrap() });
+        let peer = client.connect(parrot_addr).await.unwrap();
+
+        // Two transmissions back to back: 5 frames, then 1 frame.
+        for (transmission_id, frames) in [(1u16, 5u16), (2, 1)] {
+            for i in 0..=frames {
+                let header = VoiceHeader {
+                    group_id: 0,
+                    sender: 1,
+                    transmission_id,
+                    sequence: i,
+                    timestamp: i,
+                    end_of_transmission: i == frames,
+                };
+                peer.send_voice(datagram(header, if i == frames { b"" } else { b"x" }))
+                    .unwrap();
+            }
+        }
+
+        let mut order = Vec::new();
+        for _ in 0..8 {
+            let received = peer.recv_voice().await.unwrap();
+            order.push(VoiceHeader::decode(&received).unwrap().0.transmission_id);
+        }
+        assert!(order.windows(2).all(|pair| pair[0] <= pair[1]), "{order:?}");
     }
 }

@@ -4,7 +4,8 @@
 //! lock-free ring buffer: no allocation, locking, blocking, or logging.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
@@ -18,11 +19,37 @@ use crate::{AudioError, SAMPLE_RATE};
 /// Ring buffer length in seconds of audio at the device rate.
 const RING_SECONDS: f32 = 0.5;
 
+/// State a stream's callbacks report to other threads through atomics.
+#[derive(Default)]
+struct StreamState {
+    failed: AtomicBool,
+    /// Device latency from the last callback, in microseconds.
+    latency_us: AtomicU32,
+}
+
+/// Latest device latency reported by a stream's callback. Cheap to clone
+/// and safe to read from any thread.
+#[derive(Clone)]
+pub struct DeviceLatency(Arc<StreamState>);
+
+impl DeviceLatency {
+    /// Time between sound at the device and the callback (capture), or
+    /// between the callback and sound at the device (playback).
+    pub fn get(&self) -> Duration {
+        Duration::from_micros(u64::from(self.0.latency_us.load(Ordering::Relaxed)))
+    }
+}
+
+fn store_latency(state: &StreamState, latency: Duration) {
+    let micros = u32::try_from(latency.as_micros()).unwrap_or(u32::MAX);
+    state.latency_us.store(micros, Ordering::Relaxed);
+}
+
 /// Microphone input. Samples arrive as mono f32 at [`Capture::device_rate`].
 pub struct Capture {
     _stream: cpal::Stream,
     device_rate: u32,
-    failed: Arc<AtomicBool>,
+    state: Arc<StreamState>,
 }
 
 impl Capture {
@@ -37,12 +64,12 @@ impl Capture {
         );
         let device_rate = config.sample_rate();
         let (producer, consumer) = RingBuffer::new(ring_len(device_rate));
-        let failed = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(StreamState::default());
         let stream = match config.sample_format() {
-            SampleFormat::F32 => build_capture::<f32>(&device, config.config(), producer, &failed)?,
-            SampleFormat::I16 => build_capture::<i16>(&device, config.config(), producer, &failed)?,
-            SampleFormat::I32 => build_capture::<i32>(&device, config.config(), producer, &failed)?,
-            SampleFormat::U16 => build_capture::<u16>(&device, config.config(), producer, &failed)?,
+            SampleFormat::F32 => build_capture::<f32>(&device, config.config(), producer, &state)?,
+            SampleFormat::I16 => build_capture::<i16>(&device, config.config(), producer, &state)?,
+            SampleFormat::I32 => build_capture::<i32>(&device, config.config(), producer, &state)?,
+            SampleFormat::U16 => build_capture::<u16>(&device, config.config(), producer, &state)?,
             other => return Err(AudioError::UnsupportedFormat(other)),
         };
         stream.play()?;
@@ -50,7 +77,7 @@ impl Capture {
             Self {
                 _stream: stream,
                 device_rate,
-                failed,
+                state,
             },
             consumer,
         ))
@@ -63,7 +90,12 @@ impl Capture {
 
     /// True once the device has reported an error.
     pub fn has_failed(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
+        self.state.failed.load(Ordering::Relaxed)
+    }
+
+    /// Handle to the device latency, readable from other threads.
+    pub fn latency(&self) -> DeviceLatency {
+        DeviceLatency(Arc::clone(&self.state))
     }
 }
 
@@ -72,7 +104,7 @@ impl Capture {
 pub struct Playback {
     _stream: cpal::Stream,
     device_rate: u32,
-    failed: Arc<AtomicBool>,
+    state: Arc<StreamState>,
 }
 
 impl Playback {
@@ -87,20 +119,12 @@ impl Playback {
         );
         let device_rate = config.sample_rate();
         let (producer, consumer) = RingBuffer::new(ring_len(device_rate));
-        let failed = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(StreamState::default());
         let stream = match config.sample_format() {
-            SampleFormat::F32 => {
-                build_playback::<f32>(&device, config.config(), consumer, &failed)?
-            }
-            SampleFormat::I16 => {
-                build_playback::<i16>(&device, config.config(), consumer, &failed)?
-            }
-            SampleFormat::I32 => {
-                build_playback::<i32>(&device, config.config(), consumer, &failed)?
-            }
-            SampleFormat::U16 => {
-                build_playback::<u16>(&device, config.config(), consumer, &failed)?
-            }
+            SampleFormat::F32 => build_playback::<f32>(&device, config.config(), consumer, &state)?,
+            SampleFormat::I16 => build_playback::<i16>(&device, config.config(), consumer, &state)?,
+            SampleFormat::I32 => build_playback::<i32>(&device, config.config(), consumer, &state)?,
+            SampleFormat::U16 => build_playback::<u16>(&device, config.config(), consumer, &state)?,
             other => return Err(AudioError::UnsupportedFormat(other)),
         };
         stream.play()?;
@@ -108,7 +132,7 @@ impl Playback {
             Self {
                 _stream: stream,
                 device_rate,
-                failed,
+                state,
             },
             producer,
         ))
@@ -121,7 +145,12 @@ impl Playback {
 
     /// True once the device has reported an error.
     pub fn has_failed(&self) -> bool {
-        self.failed.load(Ordering::Relaxed)
+        self.state.failed.load(Ordering::Relaxed)
+    }
+
+    /// Handle to the device latency, readable from other threads.
+    pub fn latency(&self) -> DeviceLatency {
+        DeviceLatency(Arc::clone(&self.state))
     }
 }
 
@@ -156,7 +185,7 @@ fn build_capture<T>(
     device: &Device,
     config: StreamConfig,
     mut producer: Producer<f32>,
-    failed: &Arc<AtomicBool>,
+    state: &Arc<StreamState>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: SizedSample,
@@ -164,17 +193,27 @@ where
 {
     let channels = usize::from(config.channels);
     let scale = 1.0 / channels as f32;
-    let failed = Arc::clone(failed);
+    let rate = u64::from(config.sample_rate);
+    let state = Arc::clone(state);
+    let error_state = Arc::clone(&state);
     let stream = device.build_input_stream(
         config,
-        move |data: &[T], _: &InputCallbackInfo| {
+        move |data: &[T], info: &InputCallbackInfo| {
+            // Some drivers (WASAPI) report capture and callback as the same
+            // instant. The first sample of a buffer has waited at least the
+            // buffer's length, so use that as a floor.
+            let timestamp = info.timestamp();
+            let reported = timestamp.callback.duration_since(timestamp.capture);
+            let buffered =
+                Duration::from_nanos((data.len() / channels) as u64 * 1_000_000_000 / rate);
+            store_latency(&state, reported.max(buffered));
             for frame in data.chunks_exact(channels) {
                 let mono = frame.iter().map(|s| s.to_sample::<f32>()).sum::<f32>() * scale;
                 // A full ring means the consumer is behind; drop samples.
                 let _ = producer.push(mono);
             }
         },
-        move |_| failed.store(true, Ordering::Relaxed),
+        move |_| error_state.failed.store(true, Ordering::Relaxed),
         None,
     )?;
     Ok(stream)
@@ -184,21 +223,27 @@ fn build_playback<T>(
     device: &Device,
     config: StreamConfig,
     mut consumer: Consumer<f32>,
-    failed: &Arc<AtomicBool>,
+    state: &Arc<StreamState>,
 ) -> Result<cpal::Stream, AudioError>
 where
     T: SizedSample + FromSample<f32>,
 {
     let channels = usize::from(config.channels);
-    let failed = Arc::clone(failed);
+    let state = Arc::clone(state);
+    let error_state = Arc::clone(&state);
     let stream = device.build_output_stream(
         config,
-        move |data: &mut [T], _: &OutputCallbackInfo| {
+        move |data: &mut [T], info: &OutputCallbackInfo| {
+            let timestamp = info.timestamp();
+            store_latency(
+                &state,
+                timestamp.playback.duration_since(timestamp.callback),
+            );
             for frame in data.chunks_exact_mut(channels) {
                 frame.fill(T::from_sample(consumer.pop().unwrap_or(0.0)));
             }
         },
-        move |_| failed.store(true, Ordering::Relaxed),
+        move |_| error_state.failed.store(true, Ordering::Relaxed),
         None,
     )?;
     Ok(stream)
