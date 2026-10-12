@@ -19,9 +19,19 @@ const STATUS_WIDTH: usize = 40;
 /// Text on the status line, redrawn after each notice.
 static STATUS: Mutex<String> = Mutex::new(String::new());
 
-/// Runs the PTT loop until the user quits. Calls `on_ptt` each time the
-/// key goes down or up.
-pub fn run(mut on_ptt: impl FnMut(bool)) -> io::Result<()> {
+/// What the user did at the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Input {
+    /// The PTT key went down (true) or up (false).
+    Ptt(bool),
+    /// A number key: select that talkgroup.
+    Select(usize),
+    /// Tab: select the next talkgroup.
+    Next,
+}
+
+/// Runs the keyboard loop until the user quits.
+pub fn run(mut on_input: impl FnMut(Input)) -> io::Result<()> {
     terminal::enable_raw_mode()?;
     let enhanced = !cfg!(windows) && terminal::supports_keyboard_enhancement().unwrap_or(false);
     if enhanced {
@@ -31,7 +41,7 @@ pub fn run(mut on_ptt: impl FnMut(bool)) -> io::Result<()> {
         )?;
     }
     let hold = cfg!(windows) || enhanced;
-    let result = event_loop(hold, &mut on_ptt);
+    let result = event_loop(hold, &mut on_input);
     if enhanced {
         let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
     }
@@ -62,11 +72,12 @@ fn redraw() {
     let _ = io::stdout().flush();
 }
 
-fn event_loop(hold: bool, on_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
+fn event_loop(hold: bool, on_input: &mut impl FnMut(Input)) -> io::Result<()> {
     if hold {
-        notice("hold SPACE to talk, Q to quit");
+        notice("hold SPACE to talk, TAB or 0-9 to change talkgroup, Q to quit");
     } else {
-        notice("this terminal can't report key release: SPACE starts and stops talking, Q quits");
+        notice("this terminal can't report key release: SPACE starts and stops talking");
+        notice("TAB or 0-9 changes talkgroup, Q quits");
     }
     let mut keyed = false;
     loop {
@@ -79,9 +90,18 @@ fn event_loop(hold: bool, on_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
             && (ctrl_c || matches!(key.code, KeyCode::Char('q' | 'Q') | KeyCode::Esc))
         {
             if keyed {
-                on_ptt(false);
+                on_input(Input::Ptt(false));
             }
             return Ok(());
+        }
+        if key.kind == KeyEventKind::Press {
+            match key.code {
+                KeyCode::Tab => on_input(Input::Next),
+                KeyCode::Char(c @ '0'..='9') => {
+                    on_input(Input::Select(c as usize - '0' as usize));
+                }
+                _ => {}
+            }
         }
         if key.code != KeyCode::Char(' ') {
             continue;
@@ -94,7 +114,7 @@ fn event_loop(hold: bool, on_ptt: &mut impl FnMut(bool)) -> io::Result<()> {
         };
         if want != keyed {
             keyed = want;
-            on_ptt(keyed);
+            on_input(Input::Ptt(keyed));
         }
     }
 }

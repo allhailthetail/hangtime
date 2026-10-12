@@ -102,10 +102,20 @@ fields. Text is a 1-byte length followed by UTF-8.
 - **`HELLO`:** minor version is `0`; no capability bits are defined.
   The name is text of at most 32 bytes.
   The display name is not verified.
-- **`JOIN` / `LEAVE`:** a node only sends a group's voice to peers that
-  have joined it. Scoped groups carry the membership proof from
-  [ADR-0009](decisions/0009-group-keys-prove-membership.md); open groups
-  and All Call send proof length 0.
+- **`JOIN` / `LEAVE`:** `JOIN` means "send me this group's traffic".
+  A node sends `JOIN` for each group it monitors to every peer, and
+  `LEAVE` when it stops. Keyed groups carry the membership proof
+  ([ADR-0009](decisions/0009-group-keys-prove-membership.md)):
+  `HMAC-SHA256(key, "hangtime-join" || group ID || joiner fingerprint ||
+  recipient fingerprint)`, where the key is the group's shared
+  passphrase as UTF-8, the group ID is 4 bytes big-endian, and the
+  fingerprints are the raw 32-byte values. Open groups and All Call send
+  proof length 0.
+- **Membership:** a node accepts a `JOIN` for a keyed group only with a
+  valid proof, and ignores `JOIN` for groups it does not know. It sends
+  a group's voice, `KEYUP`, and `KEYDOWN` only to peers that joined
+  that group, and drops voice and `KEYUP` for a group from peers that
+  have not joined it.
 - **`KEYUP` / `KEYDOWN`:** bracket each transmission. The transmission
   ID matches the voice datagrams'.
 - **Group IDs:** `0xFFFFFFFF` is All Call. `0` is reserved.

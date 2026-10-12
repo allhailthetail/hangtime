@@ -80,9 +80,24 @@ hangtime parrot                   # echo node for testing alone
 hangtime parrot --lan             # echo node, discoverable on the LAN
 ```
 
-Hold SPACE to talk and press Q to quit. Hangtime listens on UDP port
-4747 (or any free port if that is taken) and uses mDNS (UDP 5353) to
-find peers.
+Hold SPACE to talk and press Q to quit. TAB or a number key changes
+the talkgroup you talk on; you always hear All Call too. Hangtime
+listens on UDP port 4747 (or any free port if that is taken) and uses
+mDNS (UDP 5353) to find peers.
+
+Talkgroups and your display name are set in `hangtime.toml` in your
+config folder (`%APPDATA%\hangtime` on Windows). A commented starter
+file is written on first run:
+
+```toml
+[[group]]
+name = "Ops"
+id = 100
+key = "a long shared passphrase"   # leave out for an open group
+```
+
+Machines with the same group `id` and `key` share the group; without
+the key a machine never receives that group's voice.
 
 ### Trying it on two machines
 

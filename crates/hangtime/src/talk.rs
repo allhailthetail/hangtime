@@ -1,5 +1,6 @@
 //! Talk mode: a mesh node. Accepts any number of peers, dials static
-//! peers and peers found by mDNS, and runs floor control on All Call.
+//! peers and peers found by mDNS, and runs floor control on All Call and
+//! the selected talkgroup.
 
 use std::collections::HashSet;
 use std::error::Error;
@@ -13,12 +14,13 @@ use hangtime_audio::{
     Transmitter,
 };
 use hangtime_discovery::{Advert, Discovery};
-use hangtime_proto::{ALL_CALL, VoiceHeader};
+use hangtime_proto::VoiceHeader;
+use hangtime_session::Group;
 use hangtime_transport::{Node, Peer};
 use tokio::runtime::Runtime;
 
-use crate::ptt;
-use crate::radio::{Members, Radio};
+use crate::ptt::{self, Input};
+use crate::radio::{Members, Radio, describe};
 
 /// Everything a connection task needs.
 struct Shared {
@@ -36,6 +38,7 @@ pub fn run(
     node: Node,
     static_peers: Vec<SocketAddr>,
     name: &str,
+    groups: Vec<Group>,
 ) -> Result<(), Box<dyn Error>> {
     let me = node.fingerprint().radio_id();
     let port = node.local_addr()?.port();
@@ -47,11 +50,20 @@ pub fn run(
     let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
     let tx_members = Arc::clone(&members);
-    let transmitter =
-        Transmitter::spawn(mic, capture.device_rate(), me, ALL_CALL, move |datagram| {
-            tx_members.send_voice(datagram);
-        })?;
-    let radio = Radio::new(me, transmitter, Arc::clone(&members), receiver.inbox());
+    let transmitter = Transmitter::spawn(mic, capture.device_rate(), me, move |datagram| {
+        tx_members.send_voice(datagram);
+    })?;
+    let radio = Radio::new(
+        node.fingerprint(),
+        groups,
+        transmitter,
+        Arc::clone(&members),
+        receiver.inbox(),
+    );
+    println!("talkgroups:");
+    for (index, group) in radio.groups().iter().enumerate() {
+        println!("  {index}: {}", describe(group));
+    }
     runtime.spawn(Arc::clone(&radio).run_timers());
 
     let fingerprint = node.fingerprint().hex();
@@ -79,8 +91,12 @@ pub fn run(
         Err(e) => println!("LAN discovery unavailable ({e}); use --peer"),
     }
 
-    ptt::set_status("[  ] idle");
-    ptt::run(|keyed| radio.ptt(keyed))?;
+    ptt::set_status("[  ] All Call");
+    ptt::run(|input| match input {
+        Input::Ptt(keyed) => radio.ptt(keyed),
+        Input::Select(index) => radio.select(index),
+        Input::Next => radio.select_next(),
+    })?;
     Ok(())
 }
 
@@ -145,7 +161,7 @@ async fn dial(shared: Arc<Shared>, addrs: Vec<SocketAddr>, expected: Option<Stri
 /// Registers a connected peer and handles its control messages and voice
 /// until it disconnects. Duplicate connections are closed.
 async fn serve(shared: Arc<Shared>, peer: Peer) {
-    if !shared.members.add(peer.clone()) {
+    if !shared.radio.add_peer(&peer) {
         peer.close("duplicate connection");
         return;
     }

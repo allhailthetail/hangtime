@@ -18,6 +18,10 @@ use hangtime_transport::{DEFAULT_PORT, Node};
 /// One identity per install, in the user's config folder.
 const IDENTITY_FILE: &str = "hangtime-identity.key";
 
+/// Settings and talkgroups, next to the identity.
+const CONFIG_FILE: &str = "hangtime.toml";
+
+mod config;
 mod parrot;
 mod ptt;
 mod radio;
@@ -111,10 +115,18 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         // sharing this install's radio ID.
         Mode::Parrot { .. } => Identity::generate()?,
     };
-    let name = match (&args.mode, args.name) {
-        (_, Some(name)) => name,
-        (Mode::Talk { .. }, None) => default_name(),
-        (Mode::Parrot { .. }, None) => "parrot".into(),
+    let config = match args.mode {
+        Mode::Talk { .. } => {
+            let path = Identity::default_path(CONFIG_FILE).ok_or("no user config folder found")?;
+            println!("settings {}", path.display());
+            config::load_or_create(&path)?
+        }
+        Mode::Parrot { .. } => config::Config::default(),
+    };
+    let name = match (&args.mode, args.name, config.name) {
+        (_, Some(name), _) | (Mode::Talk { .. }, None, Some(name)) => name,
+        (Mode::Talk { .. }, None, None) => default_name(),
+        (Mode::Parrot { .. }, None, _) => "parrot".into(),
     };
     println!("name {name}");
     let node = {
@@ -131,7 +143,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
     };
     println!("this node's fingerprint {}", node.fingerprint());
     match args.mode {
-        Mode::Talk { peers } => talk::run(&runtime, node, peers, &name),
+        Mode::Talk { peers } => talk::run(&runtime, node, peers, &name, config.groups),
         Mode::Parrot { lan } => runtime.block_on(parrot::run(node, lan)),
     }
 }

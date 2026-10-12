@@ -101,10 +101,24 @@ async fn echo(peer: Peer, parrot_id: u32) {
         group_id: ALL_CALL,
         proof: None,
     });
-    // The parrot keeps no floor state; read and drop control messages so
-    // the peer's control stream never backs up.
+    // The parrot keeps no floor state. It mirrors joins to open groups so
+    // it can echo on them; keyed groups need a key it doesn't have.
     let control_peer = peer.clone();
-    tokio::spawn(async move { while control_peer.recv_control().await.is_ok() {} });
+    tokio::spawn(async move {
+        while let Ok(message) = control_peer.recv_control().await {
+            if let ControlMessage::Join {
+                group_id,
+                proof: None,
+            } = message
+                && group_id != ALL_CALL
+            {
+                let _ = control_peer.send_control(&ControlMessage::Join {
+                    group_id,
+                    proof: None,
+                });
+            }
+        }
+    });
     let (queue, mut recordings) = mpsc::unbounded_channel::<Recording>();
     let replay_peer = peer.clone();
     tokio::spawn(async move {
@@ -338,5 +352,57 @@ mod control_tests {
         assert!(matches!(seen[0], ControlMessage::Join { .. }));
         assert!(matches!(seen[1], ControlMessage::KeyUp { .. }));
         assert!(matches!(seen[2], ControlMessage::KeyDown { .. }));
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+    use hangtime_identity::Identity;
+    use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn mirrors_open_group_joins_only() {
+        let localhost: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let parrot = Node::bind(localhost, &Identity::generate().unwrap(), "parrot").unwrap();
+        let client = Node::bind(localhost, &Identity::generate().unwrap(), "client").unwrap();
+        let parrot_addr = parrot.local_addr().unwrap();
+        tokio::spawn(async move { run(parrot, false).await.unwrap() });
+        let peer = client.connect(parrot_addr).await.unwrap();
+
+        peer.send_control(&ControlMessage::Join {
+            group_id: 100,
+            proof: Some([7; 32]),
+        })
+        .unwrap();
+        peer.send_control(&ControlMessage::Join {
+            group_id: 200,
+            proof: None,
+        })
+        .unwrap();
+
+        let wait = Duration::from_secs(3);
+        let first = tokio::time::timeout(wait, peer.recv_control())
+            .await
+            .unwrap()
+            .unwrap();
+        let second = tokio::time::timeout(wait, peer.recv_control())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            first,
+            ControlMessage::Join {
+                group_id: ALL_CALL,
+                ..
+            }
+        ));
+        assert_eq!(
+            second,
+            ControlMessage::Join {
+                group_id: 200,
+                proof: None
+            }
+        );
     }
 }

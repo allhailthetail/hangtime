@@ -2,7 +2,7 @@
 //! network. Both run off the audio callbacks, so they may allocate.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -34,6 +34,7 @@ const MAX_LATE: Duration = Duration::from_millis(100);
 struct TxShared {
     ptt: AtomicBool,
     transmission_id: AtomicU16,
+    group_id: AtomicU32,
     shutdown: AtomicBool,
 }
 
@@ -50,13 +51,13 @@ impl Transmitter {
         capture: Consumer<f32>,
         device_rate: u32,
         sender: u32,
-        group_id: u32,
         send: impl FnMut(Vec<u8>) + Send + 'static,
     ) -> Result<Self, AudioError> {
         let encoder = VoiceEncoder::new()?;
         let shared = Arc::new(TxShared {
             ptt: AtomicBool::new(false),
             transmission_id: AtomicU16::new(0),
+            group_id: AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
         });
         let mut worker = TxWorker {
@@ -66,7 +67,6 @@ impl Transmitter {
             encoder,
             send: Box::new(send),
             sender,
-            group_id,
         };
         let thread = thread::Builder::new()
             .name("hangtime-tx".into())
@@ -78,10 +78,11 @@ impl Transmitter {
         })
     }
 
-    /// Starts a transmission. The floor layer picks `transmission_id` so
-    /// it matches the `KEYUP` it sent. Keying again with a new ID ends the
-    /// current transmission and starts the new one.
-    pub fn key_up(&self, transmission_id: u16) {
+    /// Starts a transmission on `group_id`. The floor layer picks
+    /// `transmission_id` so it matches the `KEYUP` it sent. Keying again
+    /// with a new ID ends the current transmission and starts the new one.
+    pub fn key_up(&self, transmission_id: u16, group_id: u32) {
+        self.shared.group_id.store(group_id, Ordering::SeqCst);
         self.shared
             .transmission_id
             .store(transmission_id, Ordering::SeqCst);
@@ -114,7 +115,6 @@ struct TxWorker {
     encoder: VoiceEncoder,
     send: Box<dyn FnMut(Vec<u8>) + Send>,
     sender: u32,
-    group_id: u32,
 }
 
 impl TxWorker {
@@ -135,7 +135,7 @@ impl TxWorker {
             pending.clear();
             let transmission_id = self.shared.transmission_id.load(Ordering::SeqCst);
             let mut header = VoiceHeader {
-                group_id: self.group_id,
+                group_id: self.shared.group_id.load(Ordering::SeqCst),
                 sender: self.sender,
                 transmission_id,
                 sequence: 0,
@@ -452,14 +452,13 @@ mod tests {
         .unwrap();
         let inbox = receiver.inbox();
         let (sent_tx, sent_rx) = mpsc::channel();
-        let transmitter =
-            Transmitter::spawn(capture, SAMPLE_RATE, 7, 0, move |datagram: Vec<u8>| {
-                let _ = sent_tx.send(datagram.clone());
-                inbox.datagram(datagram);
-            })
-            .unwrap();
+        let transmitter = Transmitter::spawn(capture, SAMPLE_RATE, 7, move |datagram: Vec<u8>| {
+            let _ = sent_tx.send(datagram.clone());
+            inbox.datagram(datagram);
+        })
+        .unwrap();
 
-        transmitter.key_up(1);
+        transmitter.key_up(1, 0);
         thread::sleep(Duration::from_millis(20));
         for i in 0..SAMPLE_RATE / 4 {
             let _ = mic

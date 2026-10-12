@@ -22,8 +22,9 @@ non-members out reduces to deciding who gets sent the voice.
 ## Decision
 
 `JOIN` carries a membership proof:
-`HMAC-SHA256(group key, "hangtime-join" || group ID || both peers'
-fingerprints)`. A peer only sends a group's voice to peers whose proof
+`HMAC-SHA256(group key, "hangtime-join" || group ID || joiner
+fingerprint || recipient fingerprint)`. The group key is a shared
+passphrase. A peer only sends a group's voice to peers whose proof
 verifies. Binding both fingerprints means a captured proof cannot be
 replayed to another peer. Open groups and All Call carry no proof.
 
