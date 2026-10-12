@@ -40,6 +40,7 @@ pub fn run(
     name: &str,
     groups: Vec<Group>,
     vox: bool,
+    vox_sensitivity: Option<u8>,
 ) -> Result<(), Box<dyn Error>> {
     let me = node.fingerprint().radio_id();
     let port = node.local_addr()?.port();
@@ -108,12 +109,16 @@ pub fn run(
     }
 
     ptt::set_status("[  ] All Call");
+    if let Some(level) = vox_sensitivity {
+        radio.set_vox_sensitivity(level);
+    }
     radio.set_vox(vox);
     ptt::run(|input| match input {
         Input::Ptt(keyed) => radio.ptt(keyed),
         Input::Select(index) => radio.select(index),
         Input::Next => radio.select_next(),
         Input::ToggleVox => radio.toggle_vox(),
+        Input::VoxSensitivity(step) => radio.adjust_vox_sensitivity(step),
     })?;
     Ok(())
 }

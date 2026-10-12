@@ -9,6 +9,7 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+use hangtime_audio::{VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN};
 use hangtime_proto::ALL_CALL;
 use hangtime_session::Group;
 use serde::Deserialize;
@@ -21,6 +22,10 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 # Start with VOX on: talking keys the radio, no SPACE needed. Toggle
 # with V while running. A headset avoids the speaker setting off VOX.
 # vox = true
+
+# VOX sensitivity, 1 (least) to 5 (most). Lower it if taps or room noise
+# key the radio; raise it if speech is missed. Adjust live with + and -.
+# vox_sensitivity = 3
 
 # Talkgroups. All Call (everyone) is always available as group 0 in the
 # app; groups below are numbered 1, 2, ... in the order listed.
@@ -43,6 +48,7 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 pub struct Config {
     pub name: Option<String>,
     pub vox: bool,
+    pub vox_sensitivity: Option<u8>,
     /// Configured talkgroups, not including All Call.
     pub groups: Vec<Group>,
 }
@@ -53,6 +59,7 @@ struct File {
     name: Option<String>,
     #[serde(default)]
     vox: bool,
+    vox_sensitivity: Option<u8>,
     #[serde(default, rename = "group")]
     groups: Vec<GroupEntry>,
 }
@@ -83,6 +90,13 @@ pub fn load_or_create(path: &Path) -> Result<Config, String> {
 
 fn parse(text: &str) -> Result<Config, String> {
     let file: File = toml::from_str(text).map_err(|e| e.to_string())?;
+    if let Some(level) = file.vox_sensitivity
+        && !(VOX_SENSITIVITY_MIN..=VOX_SENSITIVITY_MAX).contains(&level)
+    {
+        return Err(format!(
+            "vox_sensitivity {level} is out of range; use {VOX_SENSITIVITY_MIN} to {VOX_SENSITIVITY_MAX}"
+        ));
+    }
     let mut seen = HashSet::new();
     let mut groups = Vec::new();
     for entry in file.groups {
@@ -113,6 +127,7 @@ fn parse(text: &str) -> Result<Config, String> {
     Ok(Config {
         name: file.name,
         vox: file.vox,
+        vox_sensitivity: file.vox_sensitivity,
         groups,
     })
 }
@@ -134,6 +149,7 @@ mod tests {
             r#"
             name = "Desk"
             vox = true
+            vox_sensitivity = 2
             [[group]]
             name = "Ops"
             id = 100
@@ -146,6 +162,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.name.as_deref(), Some("Desk"));
         assert!(config.vox);
+        assert_eq!(config.vox_sensitivity, Some(2));
         assert_eq!(config.groups.len(), 2);
         assert_eq!(config.groups[0].key.as_deref(), Some("secret"));
         assert_eq!(config.groups[1].key, None);
@@ -160,6 +177,8 @@ mod tests {
             "[[group]]\nname = \"\"\nid = 5",
             "[[group]]\nname = \"x\"\nid = 5\nkey = \"\"",
             "[[group]]\nname = \"x\"\nid = 5\ncolour = \"red\"",
+            "vox_sensitivity = 0",
+            "vox_sensitivity = 6",
         ];
         for text in bad {
             assert!(parse(text).is_err(), "accepted: {text}");

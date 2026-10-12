@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -16,7 +16,7 @@ use crate::denoise::Denoiser;
 use crate::jitter::{JitterBuffer, Playout};
 use crate::resample::Resampler;
 use crate::tones::Tone;
-use crate::vox::{Vox, VoxEvent};
+use crate::vox::{VOX_SENSITIVITY_DEFAULT, Vox, VoxEvent};
 use crate::{AudioError, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 
 /// How often the transmit thread drains the capture ring while active.
@@ -36,13 +36,14 @@ const MAX_LATE: Duration = Duration::from_millis(100);
 
 /// Frames of cleaned audio kept before a VOX key-up and sent first, so
 /// the first syllable isn't lost (100 ms).
-const PREROLL_FRAMES: usize = 5;
+pub(crate) const PREROLL_FRAMES: usize = 5;
 
 struct TxShared {
     ptt: AtomicBool,
     /// Send pre-roll at the start of the current transmission (VOX).
     preroll: AtomicBool,
     vox: AtomicBool,
+    vox_sensitivity: AtomicU8,
     transmission_id: AtomicU16,
     group_id: AtomicU32,
     shutdown: AtomicBool,
@@ -71,6 +72,7 @@ impl Transmitter {
             ptt: AtomicBool::new(false),
             preroll: AtomicBool::new(false),
             vox: AtomicBool::new(false),
+            vox_sensitivity: AtomicU8::new(VOX_SENSITIVITY_DEFAULT),
             transmission_id: AtomicU16::new(0),
             group_id: AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
@@ -115,6 +117,11 @@ impl Transmitter {
     /// Ends the current transmission.
     pub fn key_down(&self) {
         self.shared.ptt.store(false, Ordering::SeqCst);
+    }
+
+    /// Sets VOX sensitivity: 1 (least) to 5 (most).
+    pub fn set_vox_sensitivity(&self, level: u8) {
+        self.shared.vox_sensitivity.store(level, Ordering::SeqCst);
     }
 
     /// Turns VOX listening on or off.
@@ -191,6 +198,8 @@ impl TxWorker {
             for frame in &mut frames {
                 let mut frame: [f32; FRAME_SAMPLES] = frame.try_into().expect("exact chunk");
                 let speech = self.denoiser.process(&mut frame);
+                self.vox
+                    .set_sensitivity(self.shared.vox_sensitivity.load(Ordering::Relaxed));
                 if self.shared.vox.load(Ordering::SeqCst)
                     && let Some(event) = self.vox.push(speech)
                 {

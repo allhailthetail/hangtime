@@ -30,6 +30,8 @@ pub enum Input {
     Next,
     /// V: turn VOX on or off.
     ToggleVox,
+    /// + or -: make VOX more or less sensitive.
+    VoxSensitivity(i8),
 }
 
 /// Runs the keyboard loop until the user quits.
@@ -76,10 +78,12 @@ fn redraw() {
 
 fn event_loop(hold: bool, on_input: &mut impl FnMut(Input)) -> io::Result<()> {
     if hold {
-        notice("hold SPACE to talk, V for VOX, TAB or 0-9 to change talkgroup, Q to quit");
+        notice(
+            "hold SPACE to talk, V for VOX (+/- sensitivity), TAB or 0-9 for talkgroup, Q quits",
+        );
     } else {
         notice("this terminal can't report key release: SPACE starts and stops talking");
-        notice("V toggles VOX, TAB or 0-9 changes talkgroup, Q quits");
+        notice("V toggles VOX (+/- sensitivity), TAB or 0-9 changes talkgroup, Q quits");
     }
     let mut keyed = false;
     loop {
@@ -100,6 +104,8 @@ fn event_loop(hold: bool, on_input: &mut impl FnMut(Input)) -> io::Result<()> {
             match key.code {
                 KeyCode::Tab => on_input(Input::Next),
                 KeyCode::Char('v' | 'V') => on_input(Input::ToggleVox),
+                KeyCode::Char('+' | '=') => on_input(Input::VoxSensitivity(1)),
+                KeyCode::Char('-' | '_') => on_input(Input::VoxSensitivity(-1)),
                 KeyCode::Char(c @ '0'..='9') => {
                     on_input(Input::Select(c as usize - '0' as usize));
                 }

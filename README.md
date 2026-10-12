@@ -82,15 +82,15 @@ hangtime parrot --lan             # echo node, discoverable on the LAN
 
 Hold SPACE to talk and press Q to quit. Press V for VOX, where talking
 keys the radio with no SPACE needed (a headset keeps the speaker from
-setting it off). TAB or a number key changes the talkgroup you talk
-on; you always hear All Call too. Hangtime
-listens on UDP port 4747 (or any free port if that is taken) and uses
-mDNS (UDP 5353) to find peers.
+setting it off); + and - adjust how easily it keys. TAB or a number
+key changes the talkgroup you talk on; you always hear All Call too.
+Hangtime listens on UDP port 4747 (or any free port if that is taken)
+and uses mDNS (UDP 5353) to find peers.
 
-Talkgroups, your display name, and VOX at startup (`vox = true`) are
-set in `hangtime.toml` in your
-config folder (`%APPDATA%\hangtime` on Windows). A commented starter
-file is written on first run:
+Talkgroups, your display name, and VOX settings (`vox = true`,
+`vox_sensitivity = 3`) are set in `hangtime.toml` in your config
+folder (`%APPDATA%\hangtime` on Windows). A commented starter file is
+written on first run:
 
 ```toml
 [[group]]

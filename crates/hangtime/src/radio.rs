@@ -6,11 +6,14 @@
 //! scan list arrives, one received transmission plays at a time.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hangtime_audio::{Inbox, Tone, Transmitter, VoxEvent};
+use hangtime_audio::{
+    Inbox, Tone, Transmitter, VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN,
+    VoxEvent,
+};
 use hangtime_proto::{ALL_CALL, ControlMessage, VoiceHeader};
 use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, Group, KeyUpOutcome};
 use hangtime_transport::{Fingerprint, Peer};
@@ -167,6 +170,7 @@ pub struct Radio {
     tones: Inbox,
     next_transmission: AtomicU16,
     vox: AtomicBool,
+    vox_sensitivity: AtomicU8,
     /// Wakes the timer task when a floor's next deadline may have moved.
     deadline_changed: Notify,
 }
@@ -203,6 +207,7 @@ impl Radio {
             tones,
             next_transmission: AtomicU16::new(seed),
             vox: AtomicBool::new(false),
+            vox_sensitivity: AtomicU8::new(VOX_SENSITIVITY_DEFAULT),
             deadline_changed: Notify::new(),
         })
     }
@@ -259,6 +264,27 @@ impl Radio {
 
     pub fn toggle_vox(&self) {
         self.set_vox(!self.vox.load(Ordering::SeqCst));
+    }
+
+    /// Sets VOX sensitivity, clamped to 1 (least) through 5 (most).
+    pub fn set_vox_sensitivity(&self, level: u8) {
+        let level = level.clamp(VOX_SENSITIVITY_MIN, VOX_SENSITIVITY_MAX);
+        self.vox_sensitivity.store(level, Ordering::SeqCst);
+        self.transmitter.set_vox_sensitivity(level);
+    }
+
+    /// Makes VOX more (positive) or less (negative) sensitive by one step.
+    pub fn adjust_vox_sensitivity(&self, step: i8) {
+        let level = self
+            .vox_sensitivity
+            .load(Ordering::SeqCst)
+            .saturating_add_signed(step);
+        self.set_vox_sensitivity(level);
+        let level = self.vox_sensitivity.load(Ordering::SeqCst);
+        ptt::notice(&format!(
+            "VOX sensitivity {level}/{VOX_SENSITIVITY_MAX} (put vox_sensitivity = {level} in hangtime.toml to keep it)"
+        ));
+        self.show(&self.state.lock().unwrap());
     }
 
     /// Keys or unkeys. VOX key-ups send pre-roll, skip the talk-permit
@@ -528,11 +554,14 @@ impl Radio {
         ptt::set_status(&format!("{text}{}", self.vox_marker()));
     }
 
-    fn vox_marker(&self) -> &'static str {
+    fn vox_marker(&self) -> String {
         if self.vox.load(Ordering::SeqCst) {
-            "  (VOX)"
+            format!(
+                "  (VOX {}/{VOX_SENSITIVITY_MAX})",
+                self.vox_sensitivity.load(Ordering::SeqCst)
+            )
         } else {
-            ""
+            String::new()
         }
     }
 }

@@ -23,11 +23,17 @@ speech.
 ## Decision
 
 Run RNNoise on every transmit frame and use its speech probability for
-VOX: key after 2 frames (40 ms) at or above 0.5, unkey after 25 quiet
-frames (500 ms hang). On a VOX key-up, send the last 5 cleaned frames
-(100 ms of pre-roll) first. VOX key-ups follow the same floor rules as
-PTT but skip the talk-permit chirp and are refused silently on a busy
-channel.
+VOX: key after a run of frames at or above a threshold, unkey after 25
+quiet frames (500 ms hang). Sensitivity has five levels, from 0.95 for
+100 ms (least sensitive) to 0.50 for 40 ms (most); the default, level
+3, is 0.80 for 60 ms. Requiring a run rejects transients: a tap or
+click can briefly score as speech, but a syllable lasts well over
+100 ms. Users adjust the level live with + and -, or set
+`vox_sensitivity` in `hangtime.toml`.
+
+On a VOX key-up, send the last 5 cleaned frames (100 ms of pre-roll)
+first. VOX key-ups follow the same floor rules as PTT but skip the
+talk-permit chirp and are refused silently on a busy channel.
 
 ## Consequences
 
@@ -39,5 +45,7 @@ channel.
   stays that much deeper. PTT transmissions have no pre-roll.
 - With VOX on, the transmit thread runs continuously (RNNoise on every
   frame) instead of sleeping between transmissions.
+- The first version keyed after 40 ms at 0.5 and was set off by table
+  taps in testing; that is now level 5.
 - Speakers can set off VOX; a headset avoids it. The floor refuses VOX
   while receiving, which limits echo loops.

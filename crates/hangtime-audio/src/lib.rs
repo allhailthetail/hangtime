@@ -22,7 +22,7 @@ pub use jitter::{JitterBuffer, Playout};
 pub use pipeline::{Inbox, PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
 pub use resample::Resampler;
 pub use tones::Tone;
-pub use vox::VoxEvent;
+pub use vox::{VOX_SENSITIVITY_DEFAULT, VOX_SENSITIVITY_MAX, VOX_SENSITIVITY_MIN, VoxEvent};
 
 /// Internal sample rate.
 pub const SAMPLE_RATE: u32 = 48_000;
