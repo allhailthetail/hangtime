@@ -1,8 +1,8 @@
 //! Settings file: `hangtime.toml` in the user's config folder.
 //!
 //! Holds the display name and talkgroups, including group keys, so it is
-//! a secret like the identity file. A commented starter file is written
-//! on first run.
+//! a secret like the identity file. A commented starter file, with a few
+//! example groups, is written on first run.
 
 use std::collections::HashSet;
 use std::fs;
@@ -15,44 +15,60 @@ use hangtime_session::Group;
 use serde::Deserialize;
 
 const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
+#
+# Your talkgroups, as numbered on screen (press the number or TAB to pick):
+#
+#   0  All Call   built in: everyone on the network hears it
+#   1  Ops        \
+#   2  Social      >  the [[group]] entries below; edit, add, or remove
+#   3  Support    /
+#   4  Parrot     built in, always last: plays you back, never leaves
+#                 this machine. Use it to check your mic and speaker.
 
 # Name others see. Defaults to the computer name.
 # name = "Desk"
 
-# Start with VOX on: talking keys the radio, no SPACE needed. Toggle
-# with V while running. A headset avoids the speaker setting off VOX.
-# vox = true
+# Microphone and speaker, by name or part of a name (ignoring case). Run
+# "hangtime devices" to see the names. If one isn't available, Hangtime
+# uses the system default. --mic and --speaker override these.
+# microphone = "Headset"
+# speaker = "Headset"
 
-# Microphone and speaker to use, by name or part of a name (ignoring
-# case). Run "hangtime devices" to see the names. If the device isn't
-# available, Hangtime falls back to the Windows default. --mic and
-# --speaker override these for one run.
-# microphone = "WH-1000XM4"
-# speaker = "WH-1000XM4"
+# Start with VOX on: talking keys the radio, no SPACE needed. Toggle with
+# V while running. Use a headset so the speaker doesn't set it off.
+vox = false
 
 # VOX sensitivity, 1 (least) to 5 (most). Lower it if taps or room noise
-# key the radio; raise it if speech is missed. Adjust live with + and -.
-# vox_sensitivity = 3
+# key the radio; raise it if speech is missed. Adjust live with + and -,
+# and run "hangtime mic-test" to find the right level.
+vox_sensitivity = 3
 
-# Talkgroups you don't want to hear, by name. Their activity still shows.
-# Toggle with M while running.
-# muted = ["All Call"]
+# Talkgroups you don't want to hear, by name. They still show who is
+# talking. Toggle with M while running.
+muted = []
 
-# Talkgroups. All Call (everyone) is always available as group 0 in the
-# app; groups below are numbered 1, 2, ... in the order listed.
-#
-# Peers with the same id and key share a group. Leave out key for an open
-# group anyone can join. A key is a shared passphrase: give it out
-# privately, and use a long one.
+# Talkgroups. Everyone with the same id (and key, if set) shares a
+# group. Ids are any number from 1 to 4294967294.
+[[group]]
+name = "Ops"
+id = 100
+
+[[group]]
+name = "Social"
+id = 200
+
+[[group]]
+name = "Support"
+id = 300
+
+# A keyed group: only people with the same key can join or listen in.
+# The key is a shared passphrase; pick a long one and give it out
+# privately.
 #
 # [[group]]
-# name = "Ops"
-# id = 100
-# key = "a long shared passphrase"
-#
-# [[group]]
-# name = "Lobby"
-# id = 200
+# name = "Leads"
+# id = 400
+# key = "replace with your own long passphrase"
 "#;
 
 #[derive(Debug, Default)]
@@ -169,10 +185,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starter_file_parses_to_no_groups() {
+    fn starter_file_has_example_groups() {
         let config = parse(STARTER).unwrap();
-        assert!(config.groups.is_empty());
+        let names: Vec<_> = config.groups.iter().map(|g| g.name.as_str()).collect();
+        assert_eq!(names, ["Ops", "Social", "Support"]);
+        assert!(config.groups.iter().all(|g| g.key.is_none()));
         assert_eq!(config.name, None);
+        assert!(!config.vox);
+        assert_eq!(config.vox_sensitivity, Some(3));
+        assert!(config.muted.is_empty());
     }
 
     #[test]

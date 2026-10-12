@@ -78,10 +78,21 @@ impl Identity {
         file.sync_all()
     }
 
-    /// Default location for an identity file named `name`:
-    /// `%APPDATA%\hangtime` on Windows, `~/.config/hangtime` on Linux,
-    /// `~/Library/Application Support/hangtime` on macOS.
+    /// Default location for a file named `name` in Hangtime's config
+    /// folder: `$XDG_CONFIG_HOME/hangtime` if that is set, otherwise
+    /// `~/.config/hangtime`, on every platform.
     pub fn default_path(name: &str) -> Option<PathBuf> {
+        let config = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|dir| dir.is_absolute())
+            .or_else(|| directories::BaseDirs::new().map(|dirs| dirs.home_dir().join(".config")))?;
+        Some(config.join("hangtime").join(name))
+    }
+
+    /// Where versions before 0.1.0's release kept `name`: the platform
+    /// config folder (`%APPDATA%\hangtime` on Windows). Used to move old
+    /// files to [`Identity::default_path`].
+    pub fn legacy_path(name: &str) -> Option<PathBuf> {
         directories::BaseDirs::new().map(|dirs| dirs.config_dir().join("hangtime").join(name))
     }
 

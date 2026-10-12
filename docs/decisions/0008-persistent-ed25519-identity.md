@@ -1,6 +1,6 @@
 # 0008: Persistent Ed25519 identity
 
-- **Status:** Accepted
+- **Status:** Accepted (location changed by [0015](0015-config-folder-and-release-zip.md))
 - **Date:** 2026-10-12
 
 ## Context

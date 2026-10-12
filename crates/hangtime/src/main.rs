@@ -14,6 +14,7 @@
 
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use hangtime_audio::list_devices;
@@ -44,11 +45,12 @@ usage:
   hangtime [--port N] [--peer HOST:PORT]... [--name NAME] [--mic NAME] [--speaker NAME]
       talk; finds peers on the LAN, and dials each --peer
   hangtime parrot [--port N] [--lan]
-      echo each transmission back to its sender (--lan: discoverable)
+      headless echo node, for network tests (--lan: discoverable)
   hangtime mic-test [--mic NAME]
       record the microphone for 10 s and show what VOX hears
   hangtime devices
       list microphones and speakers (names for --mic and --speaker)
+  hangtime --version
 
 --mic and --speaker match a device name, or any name containing the text,
 ignoring case. If it isn't available, Hangtime uses the default device.";
@@ -152,6 +154,17 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
 }
 
 fn main() -> ExitCode {
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            println!("hangtime {}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        Some("--help" | "-h") => {
+            println!("hangtime {}\n{USAGE}", env!("CARGO_PKG_VERSION"));
+            return ExitCode::SUCCESS;
+        }
+        _ => {}
+    }
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(args) => args,
         Err(message) => {
@@ -169,6 +182,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: Args) -> Result<(), Box<dyn Error>> {
+    move_legacy_files();
     match args.mode {
         Mode::Devices => {
             print_devices();
@@ -251,6 +265,39 @@ fn config_path(file: &str) -> Result<std::path::PathBuf, Box<dyn Error>> {
     Ok(Identity::default_path(file).ok_or("no user config folder found")?)
 }
 
+/// Moves files from the old config folder (`%APPDATA%\hangtime` on
+/// Windows) to the current one, keeping this install's identity.
+fn move_legacy_files() {
+    let folder = |path: Option<PathBuf>| path.and_then(|p| p.parent().map(Path::to_path_buf));
+    if let (Some(old), Some(new)) = (
+        folder(Identity::legacy_path(CONFIG_FILE)),
+        folder(Identity::default_path(CONFIG_FILE)),
+    ) && old != new
+    {
+        move_files(&old, &new, &[IDENTITY_FILE, CONFIG_FILE, MIC_TEST_FILE]);
+    }
+}
+
+/// Moves each of `files` from `old` to `new`, skipping any already in
+/// `new`, then removes `old` if that left it empty.
+fn move_files(old: &Path, new: &Path, files: &[&str]) {
+    for file in files {
+        let (from, to) = (old.join(file), new.join(file));
+        if !from.exists() || to.exists() {
+            continue;
+        }
+        let _ = std::fs::create_dir_all(new);
+        let moved = std::fs::rename(&from, &to)
+            .or_else(|_| std::fs::copy(&from, &to).and_then(|_| std::fs::remove_file(&from)));
+        match moved {
+            Ok(()) => println!("moved {} to {}", from.display(), to.display()),
+            Err(e) => eprintln!("could not move {}: {e}", from.display()),
+        }
+    }
+    // Only succeeds if the old folder is now empty.
+    let _ = std::fs::remove_dir(old);
+}
+
 fn load_config() -> Result<config::Config, Box<dyn Error>> {
     let path = config_path(CONFIG_FILE)?;
     println!("settings {}", path.display());
@@ -282,6 +329,26 @@ fn default_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moves_old_files_without_overwriting_new_ones() {
+        let root = std::env::temp_dir().join(format!("hangtime-move-test-{}", std::process::id()));
+        let (old, new) = (root.join("old"), root.join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("a"), "old a").unwrap();
+        std::fs::write(old.join("b"), "old b").unwrap();
+        std::fs::write(new.join("b"), "new b").unwrap();
+
+        move_files(&old, &new, &["a", "b", "missing"]);
+
+        assert_eq!(std::fs::read_to_string(new.join("a")).unwrap(), "old a");
+        assert_eq!(std::fs::read_to_string(new.join("b")).unwrap(), "new b");
+        // The skipped file keeps the old folder alive rather than being lost.
+        assert!(old.join("b").exists());
+        assert!(!old.join("a").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     fn parse(args: &[&str]) -> Result<Args, String> {
         parse_args(args.iter().map(|s| s.to_string()))

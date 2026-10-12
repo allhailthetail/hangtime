@@ -105,9 +105,11 @@ and uses mDNS (UDP 5353) to find peers.
 
 Talkgroups, your display name, VOX settings (`vox = true`,
 `vox_sensitivity = 3`), and muted groups (`muted = ["All Call"]`)
-are set in `hangtime.toml` in your config
-folder (`%APPDATA%\hangtime` on Windows). A commented starter file is
-written on first run:
+are set in `~/.config/hangtime/hangtime.toml`
+(`%USERPROFILE%\.config\hangtime` on Windows), next to your identity
+key. Files from older builds in `%APPDATA%\hangtime` move there on
+first run. A commented starter file is written on first run, with
+three example open groups between All Call and Parrot:
 
 ```toml
 [[group]]
@@ -118,6 +120,15 @@ key = "a long shared passphrase"   # leave out for an open group
 
 Machines with the same group `id` and `key` share the group; without
 the key a machine never receives that group's voice.
+
+### Installing a release
+
+A release zip (`scripts\package.ps1` builds one; see
+[RELEASING.md](docs/RELEASING.md)) holds the exe and `install.cmd`,
+which installs for the current user: `%LOCALAPPDATA%\Programs\Hangtime`,
+PATH, Start menu, and a firewall rule when run as administrator.
+[QUICKSTART.md](docs/QUICKSTART.md) is the user-facing README in the
+zip.
 
 ### Trying it on two machines
 
@@ -138,6 +149,8 @@ Planned later: `hangtime --server` as a repeater, and a tray app.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Wire protocol](docs/PROTOCOL.md) (draft)
 - [Decision records](docs/decisions/)
+- [Quick start](docs/QUICKSTART.md) for users, and [releasing](docs/RELEASING.md)
+- [Changelog](CHANGELOG.md)
 
 ## License
 
