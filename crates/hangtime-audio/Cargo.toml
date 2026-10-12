@@ -10,6 +10,7 @@ publish.workspace = true
 [dependencies]
 cpal = "0.18"
 hangtime-proto = { version = "0.1.0", path = "../hangtime-proto" }
+nnnoiseless = { version = "0.5", default-features = false }
 opus = "0.4"
 rtrb = "0.4"
 

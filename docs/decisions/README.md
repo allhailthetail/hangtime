@@ -16,6 +16,7 @@ without writing a new ADR that supersedes the old one.
 | [0008](0008-persistent-ed25519-identity.md) | Persistent Ed25519 identity | Accepted |
 | [0009](0009-group-keys-prove-membership.md) | Group keys prove membership | Accepted |
 | [0010](0010-control-stream-and-floor.md) | Control stream and floor rules | Accepted |
+| [0011](0011-vox-from-rnnoise.md) | VOX from RNNoise's speech estimate | Accepted |
 
 To add a decision, copy [template.md](template.md),
 number it sequentially, and add it to the table above.

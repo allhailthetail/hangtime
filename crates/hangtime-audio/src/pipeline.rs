@@ -1,6 +1,7 @@
 //! Transmit and receive threads between the device ring buffers and the
 //! network. Both run off the audio callbacks, so they may allocate.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -11,12 +12,14 @@ use hangtime_proto::VoiceHeader;
 use rtrb::{Consumer, Producer};
 
 use crate::codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
+use crate::denoise::Denoiser;
 use crate::jitter::{JitterBuffer, Playout};
 use crate::resample::Resampler;
 use crate::tones::Tone;
+use crate::vox::{Vox, VoxEvent};
 use crate::{AudioError, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 
-/// How often the transmit thread drains the capture ring while keyed.
+/// How often the transmit thread drains the capture ring while active.
 const CAPTURE_POLL: Duration = Duration::from_millis(5);
 
 /// Average time from a sample leaving the capture ring to its frame
@@ -31,31 +34,43 @@ const JITTER_TARGET_FRAMES: u16 = 3;
 /// of bursting frames to catch up.
 const MAX_LATE: Duration = Duration::from_millis(100);
 
+/// Frames of cleaned audio kept before a VOX key-up and sent first, so
+/// the first syllable isn't lost (100 ms).
+const PREROLL_FRAMES: usize = 5;
+
 struct TxShared {
     ptt: AtomicBool,
+    /// Send pre-roll at the start of the current transmission (VOX).
+    preroll: AtomicBool,
+    vox: AtomicBool,
     transmission_id: AtomicU16,
     group_id: AtomicU32,
     shutdown: AtomicBool,
 }
 
-/// Encodes microphone audio into voice datagrams while keyed. Sleeps
-/// (parked) while unkeyed.
+/// Cleans up microphone audio and encodes it into voice datagrams while
+/// keyed. With VOX on it listens continuously and reports speech; with
+/// VOX off it sleeps (parked) while unkeyed.
 pub struct Transmitter {
     shared: Arc<TxShared>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Transmitter {
-    /// Starts the transmit thread. `send` receives each encoded datagram.
+    /// Starts the transmit thread. `send` receives each encoded datagram;
+    /// `on_vox` receives VOX decisions while VOX is on.
     pub fn spawn(
         capture: Consumer<f32>,
         device_rate: u32,
         sender: u32,
         send: impl FnMut(Vec<u8>) + Send + 'static,
+        on_vox: impl FnMut(VoxEvent) + Send + 'static,
     ) -> Result<Self, AudioError> {
         let encoder = VoiceEncoder::new()?;
         let shared = Arc::new(TxShared {
             ptt: AtomicBool::new(false),
+            preroll: AtomicBool::new(false),
+            vox: AtomicBool::new(false),
             transmission_id: AtomicU16::new(0),
             group_id: AtomicU32::new(0),
             shutdown: AtomicBool::new(false),
@@ -65,7 +80,11 @@ impl Transmitter {
             capture,
             resampler: Resampler::new(device_rate, SAMPLE_RATE),
             encoder,
+            denoiser: Denoiser::default(),
+            vox: Vox::default(),
+            preroll: VecDeque::with_capacity(PREROLL_FRAMES + 1),
             send: Box::new(send),
+            on_vox: Box::new(on_vox),
             sender,
         };
         let thread = thread::Builder::new()
@@ -79,22 +98,35 @@ impl Transmitter {
     }
 
     /// Starts a transmission on `group_id`. The floor layer picks
-    /// `transmission_id` so it matches the `KEYUP` it sent. Keying again
-    /// with a new ID ends the current transmission and starts the new one.
-    pub fn key_up(&self, transmission_id: u16, group_id: u32) {
+    /// `transmission_id` so it matches the `KEYUP` it sent. With
+    /// `preroll`, the last 100 ms before key-up is sent first (for VOX).
+    /// Keying again with a new ID ends the current transmission and starts
+    /// the new one.
+    pub fn key_up(&self, transmission_id: u16, group_id: u32, preroll: bool) {
         self.shared.group_id.store(group_id, Ordering::SeqCst);
+        self.shared.preroll.store(preroll, Ordering::SeqCst);
         self.shared
             .transmission_id
             .store(transmission_id, Ordering::SeqCst);
         self.shared.ptt.store(true, Ordering::SeqCst);
-        if let Some(thread) = &self.thread {
-            thread.thread().unpark();
-        }
+        self.wake();
     }
 
     /// Ends the current transmission.
     pub fn key_down(&self) {
         self.shared.ptt.store(false, Ordering::SeqCst);
+    }
+
+    /// Turns VOX listening on or off.
+    pub fn set_vox(&self, on: bool) {
+        self.shared.vox.store(on, Ordering::SeqCst);
+        self.wake();
+    }
+
+    fn wake(&self) {
+        if let Some(thread) = &self.thread {
+            thread.thread().unpark();
+        }
     }
 }
 
@@ -113,7 +145,12 @@ struct TxWorker {
     capture: Consumer<f32>,
     resampler: Resampler,
     encoder: VoiceEncoder,
+    denoiser: Denoiser,
+    vox: Vox,
+    /// The most recent cleaned frames, oldest first.
+    preroll: VecDeque<[f32; FRAME_SAMPLES]>,
     send: Box<dyn FnMut(Vec<u8>) + Send>,
+    on_vox: Box<dyn FnMut(VoxEvent) + Send>,
     sender: u32,
 }
 
@@ -122,53 +159,116 @@ impl TxWorker {
         let mut pending = Vec::with_capacity(FRAME_SAMPLES * 2);
         let mut chunk = Vec::new();
         let mut packet = [0u8; MAX_PACKET];
+        // The transmission in progress, if any.
+        let mut current: Option<VoiceHeader> = None;
         loop {
-            while !self.shared.ptt.load(Ordering::SeqCst) {
-                if self.shared.shutdown.load(Ordering::SeqCst) {
-                    return;
+            if !self.active() {
+                if let Some(header) = current.take() {
+                    self.end(header);
                 }
-                thread::park();
-            }
-            // Key-up: audio captured while unkeyed is stale.
-            self.discard_capture();
-            self.resampler.reset();
-            pending.clear();
-            let transmission_id = self.shared.transmission_id.load(Ordering::SeqCst);
-            let mut header = VoiceHeader {
-                group_id: self.shared.group_id.load(Ordering::SeqCst),
-                sender: self.sender,
-                transmission_id,
-                sequence: 0,
-                timestamp: 0,
-                end_of_transmission: false,
-            };
-            while self.shared.ptt.load(Ordering::SeqCst)
-                && self.shared.transmission_id.load(Ordering::SeqCst) == transmission_id
-                && !self.shared.shutdown.load(Ordering::SeqCst)
-            {
-                chunk.clear();
-                while let Ok(sample) = self.capture.pop() {
-                    chunk.push(sample);
-                }
-                self.resampler.process(&chunk, &mut pending);
-                let mut frames = pending.chunks_exact(FRAME_SAMPLES);
-                for frame in &mut frames {
-                    let frame: &[f32; FRAME_SAMPLES] = frame.try_into().expect("exact chunk");
-                    if let Ok(Some(encoded)) = self.encoder.encode(frame, &mut packet) {
-                        let mut datagram = header.encode().to_vec();
-                        datagram.extend_from_slice(encoded);
-                        (self.send)(datagram);
-                        header.sequence = header.sequence.wrapping_add(1);
+                while !self.active() {
+                    if self.shared.shutdown.load(Ordering::SeqCst) {
+                        return;
                     }
-                    header.timestamp = header.timestamp.wrapping_add(1);
+                    thread::park();
                 }
-                let used = pending.len() - frames.remainder().len();
-                pending.drain(..used);
-                thread::sleep(CAPTURE_POLL);
+                // Waking up: audio captured while idle is stale.
+                self.discard_capture();
+                self.resampler.reset();
+                self.preroll.clear();
+                self.vox.reset();
+                pending.clear();
             }
-            header.end_of_transmission = true;
-            (self.send)(header.encode().to_vec());
+            if self.shared.shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+            chunk.clear();
+            while let Ok(sample) = self.capture.pop() {
+                chunk.push(sample);
+            }
+            self.resampler.process(&chunk, &mut pending);
+            let mut frames = pending.chunks_exact(FRAME_SAMPLES);
+            for frame in &mut frames {
+                let mut frame: [f32; FRAME_SAMPLES] = frame.try_into().expect("exact chunk");
+                let speech = self.denoiser.process(&mut frame);
+                if self.shared.vox.load(Ordering::SeqCst)
+                    && let Some(event) = self.vox.push(speech)
+                {
+                    (self.on_vox)(event);
+                }
+                current = self.follow_key(current, &mut packet);
+                if let Some(header) = &mut current {
+                    self.encode(header, &frame, &mut packet);
+                }
+                self.preroll.push_back(frame);
+                if self.preroll.len() > PREROLL_FRAMES {
+                    self.preroll.pop_front();
+                }
+            }
+            let used = pending.len() - frames.remainder().len();
+            pending.drain(..used);
+            thread::sleep(CAPTURE_POLL);
         }
+    }
+
+    /// Keyed by PTT, or listening for VOX.
+    fn active(&self) -> bool {
+        self.shared.ptt.load(Ordering::SeqCst) || self.shared.vox.load(Ordering::SeqCst)
+    }
+
+    /// Starts, ends, or switches the transmission to match the key state.
+    fn follow_key(
+        &mut self,
+        current: Option<VoiceHeader>,
+        packet: &mut [u8; MAX_PACKET],
+    ) -> Option<VoiceHeader> {
+        let keyed = self.shared.ptt.load(Ordering::SeqCst);
+        let id = self.shared.transmission_id.load(Ordering::SeqCst);
+        match current {
+            Some(header) if keyed && header.transmission_id == id => Some(header),
+            other => {
+                if let Some(header) = other {
+                    self.end(header);
+                }
+                if !keyed {
+                    return None;
+                }
+                let mut header = VoiceHeader {
+                    group_id: self.shared.group_id.load(Ordering::SeqCst),
+                    sender: self.sender,
+                    transmission_id: id,
+                    sequence: 0,
+                    timestamp: 0,
+                    end_of_transmission: false,
+                };
+                if self.shared.preroll.load(Ordering::SeqCst) {
+                    for frame in std::mem::take(&mut self.preroll) {
+                        self.encode(&mut header, &frame, packet);
+                    }
+                }
+                Some(header)
+            }
+        }
+    }
+
+    fn encode(
+        &mut self,
+        header: &mut VoiceHeader,
+        frame: &[f32; FRAME_SAMPLES],
+        packet: &mut [u8; MAX_PACKET],
+    ) {
+        if let Ok(Some(encoded)) = self.encoder.encode(frame, packet) {
+            let mut datagram = header.encode().to_vec();
+            datagram.extend_from_slice(encoded);
+            (self.send)(datagram);
+            header.sequence = header.sequence.wrapping_add(1);
+        }
+        header.timestamp = header.timestamp.wrapping_add(1);
+    }
+
+    fn end(&mut self, mut header: VoiceHeader) {
+        header.end_of_transmission = true;
+        (self.send)(header.encode().to_vec());
     }
 
     fn discard_capture(&mut self) {
@@ -452,13 +552,19 @@ mod tests {
         .unwrap();
         let inbox = receiver.inbox();
         let (sent_tx, sent_rx) = mpsc::channel();
-        let transmitter = Transmitter::spawn(capture, SAMPLE_RATE, 7, move |datagram: Vec<u8>| {
-            let _ = sent_tx.send(datagram.clone());
-            inbox.datagram(datagram);
-        })
+        let transmitter = Transmitter::spawn(
+            capture,
+            SAMPLE_RATE,
+            7,
+            move |datagram: Vec<u8>| {
+                let _ = sent_tx.send(datagram.clone());
+                inbox.datagram(datagram);
+            },
+            |_| {},
+        )
         .unwrap();
 
-        transmitter.key_up(1, 0);
+        transmitter.key_up(1, 0, false);
         thread::sleep(Duration::from_millis(20));
         for i in 0..SAMPLE_RATE / 4 {
             let _ = mic
@@ -482,6 +588,52 @@ mod tests {
         let stats = stats_rx.try_recv().expect("no stats reported");
         assert_eq!(stats.sent as usize, sent.len() - 1);
         assert_eq!(stats.lost, 0);
+    }
+
+    #[test]
+    fn vox_key_up_sends_preroll_first() {
+        let (mut mic, capture) = RingBuffer::new(SAMPLE_RATE as usize);
+        let (sent_tx, sent_rx) = mpsc::channel();
+        let transmitter = Transmitter::spawn(
+            capture,
+            SAMPLE_RATE,
+            7,
+            move |datagram: Vec<u8>| {
+                let _ = sent_tx.send(datagram);
+            },
+            |_| {},
+        )
+        .unwrap();
+        // Listening with VOX fills the pre-roll before anyone keys.
+        transmitter.set_vox(true);
+        thread::sleep(Duration::from_millis(20));
+        for i in 0..SAMPLE_RATE / 5 {
+            let _ = mic.push((i as f32 * 0.05).sin() * 0.3);
+        }
+        thread::sleep(Duration::from_millis(100));
+        // Key changes take effect on the next frame, so keep audio coming
+        // as a microphone would.
+        let mut feed = |ms: u32| {
+            for i in 0..SAMPLE_RATE * ms / 1000 {
+                let _ = mic.push((i as f32 * 0.05).sin() * 0.3);
+            }
+            thread::sleep(Duration::from_millis(u64::from(ms) + 20));
+        };
+        transmitter.key_up(1, 0, true);
+        feed(20);
+        transmitter.key_down();
+        feed(40);
+
+        let sent: Vec<Vec<u8>> = sent_rx.try_iter().collect();
+        let (end, _) = VoiceHeader::decode(sent.last().expect("nothing sent")).unwrap();
+        assert!(end.end_of_transmission);
+        // The transmission covers the pre-roll even though it was keyed
+        // for only about one frame.
+        assert!(
+            usize::from(end.timestamp) >= PREROLL_FRAMES,
+            "covered {} frames",
+            end.timestamp
+        );
     }
 
     #[test]

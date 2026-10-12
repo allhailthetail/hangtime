@@ -143,7 +143,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
     };
     println!("this node's fingerprint {}", node.fingerprint());
     match args.mode {
-        Mode::Talk { peers } => talk::run(&runtime, node, peers, &name, config.groups),
+        Mode::Talk { peers } => talk::run(&runtime, node, peers, &name, config.groups, config.vox),
         Mode::Parrot { lan } => runtime.block_on(parrot::run(node, lan)),
     }
 }

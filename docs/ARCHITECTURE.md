@@ -88,10 +88,10 @@ The binary runs in two roles:
 
 1. **Noise suppression:** RNNoise via the `nnnoiseless` crate.
 1. **Transmit gate:** PTT state, or VOX.
-1. **VOX:** voice activity detection plus a VOX hang timer so
-   transmission doesn't chop between words. A pre-roll buffer of about
-   100-200 ms is sent when VOX triggers, so the first syllable isn't
-   lost.
+1. **VOX:** RNNoise's per-frame speech probability plus a 500 ms VOX
+   hang timer so transmission doesn't chop between words. 100 ms of
+   pre-roll is sent when VOX triggers, so the first syllable isn't
+   lost ([ADR-0011](decisions/0011-vox-from-rnnoise.md)).
 1. **Encode:** Opus, 20 ms frames, mono, voice mode, roughly
    16-24 kbps, in-band FEC on, DTX on
    ([ADR-0003](decisions/0003-opus-codec.md)).

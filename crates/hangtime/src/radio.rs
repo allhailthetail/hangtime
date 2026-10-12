@@ -6,11 +6,11 @@
 //! scan list arrives, one received transmission plays at a time.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use hangtime_audio::{Inbox, Tone, Transmitter};
+use hangtime_audio::{Inbox, Tone, Transmitter, VoxEvent};
 use hangtime_proto::{ALL_CALL, ControlMessage, VoiceHeader};
 use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, Group, KeyUpOutcome};
 use hangtime_transport::{Fingerprint, Peer};
@@ -166,6 +166,7 @@ pub struct Radio {
     /// Plays tones through the receive thread.
     tones: Inbox,
     next_transmission: AtomicU16,
+    vox: AtomicBool,
     /// Wakes the timer task when a floor's next deadline may have moved.
     deadline_changed: Notify,
 }
@@ -201,6 +202,7 @@ impl Radio {
             transmitter,
             tones,
             next_transmission: AtomicU16::new(seed),
+            vox: AtomicBool::new(false),
             deadline_changed: Notify::new(),
         })
     }
@@ -227,6 +229,42 @@ impl Radio {
 
     /// The local PTT key went down or up.
     pub fn ptt(&self, keyed: bool) {
+        self.key(keyed, false);
+    }
+
+    /// VOX heard speech start or stop.
+    pub fn on_vox(&self, event: VoxEvent) {
+        if self.vox.load(Ordering::SeqCst) {
+            self.key(event == VoxEvent::Start, true);
+        }
+    }
+
+    /// Turns VOX on or off.
+    pub fn set_vox(&self, on: bool) {
+        if self.vox.swap(on, Ordering::SeqCst) == on {
+            return;
+        }
+        self.transmitter.set_vox(on);
+        if !on {
+            // Don't leave a VOX transmission keyed with nothing to end it.
+            self.key(false, true);
+        }
+        ptt::notice(if on {
+            "VOX on: talking keys the radio"
+        } else {
+            "VOX off"
+        });
+        self.show(&self.state.lock().unwrap());
+    }
+
+    pub fn toggle_vox(&self) {
+        self.set_vox(!self.vox.load(Ordering::SeqCst));
+    }
+
+    /// Keys or unkeys. VOX key-ups send pre-roll, skip the talk-permit
+    /// chirp, and are refused silently when the channel is busy, so speech
+    /// on a busy channel doesn't set off a string of bonks.
+    fn key(&self, keyed: bool, vox: bool) {
         let now = Instant::now();
         let mut state = self.state.lock().unwrap();
         let group = &self.groups[state.selected];
@@ -241,8 +279,10 @@ impl Radio {
                 .get_mut(&group.id)
                 .expect("selected group has a floor");
             if !receiving_elsewhere && floor.request(id, now).is_ok() {
-                self.transmitter.key_up(id, group.id);
-                self.tones.tone(Tone::TalkPermit);
+                self.transmitter.key_up(id, group.id, vox);
+                if !vox {
+                    self.tones.tone(Tone::TalkPermit);
+                }
                 self.members.send_to_group(
                     group.id,
                     &ControlMessage::KeyUp {
@@ -251,8 +291,10 @@ impl Radio {
                     },
                 );
             } else {
-                self.tones.tone(Tone::Bonk);
-                ptt::set_status(&format!("[--] {} busy", group.name));
+                if !vox {
+                    self.tones.tone(Tone::Bonk);
+                }
+                ptt::set_status(&format!("[--] {} busy{}", group.name, self.vox_marker()));
                 return;
             }
         } else if let Some(floor) = state.floors.get_mut(&group.id)
@@ -483,7 +525,15 @@ impl Radio {
             Some(FloorState::Hang { .. }) => format!("[..] {} hang time", selected.name),
             _ => format!("[  ] {}", selected.name),
         });
-        ptt::set_status(&text);
+        ptt::set_status(&format!("{text}{}", self.vox_marker()));
+    }
+
+    fn vox_marker(&self) -> &'static str {
+        if self.vox.load(Ordering::SeqCst) {
+            "  (VOX)"
+        } else {
+            ""
+        }
     }
 }
 

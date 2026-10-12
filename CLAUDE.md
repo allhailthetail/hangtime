@@ -32,7 +32,8 @@ Cargo workspace (edition 2024); every crate lives in `crates/`.
   (mirrors `docs/PROTOCOL.md`).
 - `hangtime-transport`: QUIC connections, voice datagrams, control
   streams.
-- `hangtime-audio`: device I/O, ring buffer handoff, Opus.
+- `hangtime-audio`: device I/O, ring buffer handoff, Opus, noise
+  suppression, VOX, tones.
 - `hangtime-identity`: persistent Ed25519 key, fingerprint, radio ID.
 - `hangtime-session`: floor control and group membership proofs (no I/O).
 - `hangtime-discovery`: mDNS advertise and browse.

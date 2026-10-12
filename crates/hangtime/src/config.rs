@@ -18,6 +18,10 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 # Name others see. Defaults to the computer name.
 # name = "Desk"
 
+# Start with VOX on: talking keys the radio, no SPACE needed. Toggle
+# with V while running. A headset avoids the speaker setting off VOX.
+# vox = true
+
 # Talkgroups. All Call (everyone) is always available as group 0 in the
 # app; groups below are numbered 1, 2, ... in the order listed.
 #
@@ -38,6 +42,7 @@ const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
 #[derive(Debug, Default)]
 pub struct Config {
     pub name: Option<String>,
+    pub vox: bool,
     /// Configured talkgroups, not including All Call.
     pub groups: Vec<Group>,
 }
@@ -46,6 +51,8 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 struct File {
     name: Option<String>,
+    #[serde(default)]
+    vox: bool,
     #[serde(default, rename = "group")]
     groups: Vec<GroupEntry>,
 }
@@ -105,6 +112,7 @@ fn parse(text: &str) -> Result<Config, String> {
     }
     Ok(Config {
         name: file.name,
+        vox: file.vox,
         groups,
     })
 }
@@ -125,6 +133,7 @@ mod tests {
         let config = parse(
             r#"
             name = "Desk"
+            vox = true
             [[group]]
             name = "Ops"
             id = 100
@@ -136,6 +145,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.name.as_deref(), Some("Desk"));
+        assert!(config.vox);
         assert_eq!(config.groups.len(), 2);
         assert_eq!(config.groups[0].key.as_deref(), Some("secret"));
         assert_eq!(config.groups[1].key, None);

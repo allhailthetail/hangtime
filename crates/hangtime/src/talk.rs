@@ -39,6 +39,7 @@ pub fn run(
     static_peers: Vec<SocketAddr>,
     name: &str,
     groups: Vec<Group>,
+    vox: bool,
 ) -> Result<(), Box<dyn Error>> {
     let me = node.fingerprint().radio_id();
     let port = node.local_addr()?.port();
@@ -50,9 +51,18 @@ pub fn run(
     let report = latency_reporter(capture.latency(), playback.latency(), Arc::clone(&members));
     let receiver = Receiver::spawn(speaker, playback.device_rate(), report)?;
     let tx_members = Arc::clone(&members);
-    let transmitter = Transmitter::spawn(mic, capture.device_rate(), me, move |datagram| {
-        tx_members.send_voice(datagram);
-    })?;
+    // VOX decisions come from the transmit thread; the radio handles them
+    // on the runtime.
+    let (vox_tx, mut vox_rx) = tokio::sync::mpsc::unbounded_channel();
+    let transmitter = Transmitter::spawn(
+        mic,
+        capture.device_rate(),
+        me,
+        move |datagram| tx_members.send_voice(datagram),
+        move |event| {
+            let _ = vox_tx.send(event);
+        },
+    )?;
     let radio = Radio::new(
         node.fingerprint(),
         groups,
@@ -65,6 +75,12 @@ pub fn run(
         println!("  {index}: {}", describe(group));
     }
     runtime.spawn(Arc::clone(&radio).run_timers());
+    let vox_radio = Arc::clone(&radio);
+    runtime.spawn(async move {
+        while let Some(event) = vox_rx.recv().await {
+            vox_radio.on_vox(event);
+        }
+    });
 
     let fingerprint = node.fingerprint().hex();
     let shared = Arc::new(Shared {
@@ -92,10 +108,12 @@ pub fn run(
     }
 
     ptt::set_status("[  ] All Call");
+    radio.set_vox(vox);
     ptt::run(|input| match input {
         Input::Ptt(keyed) => radio.ptt(keyed),
         Input::Select(index) => radio.select(index),
         Input::Next => radio.select_next(),
+        Input::ToggleVox => radio.toggle_vox(),
     })?;
     Ok(())
 }

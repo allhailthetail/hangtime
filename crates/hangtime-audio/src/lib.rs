@@ -7,11 +7,13 @@
 use std::fmt;
 
 mod codec;
+mod denoise;
 mod device;
 mod jitter;
 mod pipeline;
 mod resample;
 mod tones;
+mod vox;
 
 pub use codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
 pub use device::{Capture, DeviceLatency, Playback};
@@ -20,6 +22,7 @@ pub use jitter::{JitterBuffer, Playout};
 pub use pipeline::{Inbox, PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
 pub use resample::Resampler;
 pub use tones::Tone;
+pub use vox::VoxEvent;
 
 /// Internal sample rate.
 pub const SAMPLE_RATE: u32 = 48_000;
