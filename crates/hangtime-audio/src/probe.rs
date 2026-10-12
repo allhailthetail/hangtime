@@ -61,3 +61,73 @@ impl VoxProbe {
         reports
     }
 }
+
+/// Analyses a mic-test recording. Run by hand:
+/// `HANGTIME_WAV=path cargo test -p hangtime-audio analyze_wav -- --ignored --nocapture`
+#[cfg(test)]
+mod wav_analysis {
+    use super::*;
+    use crate::Resampler;
+
+    fn read_wav(path: &str) -> (u32, Vec<f32>) {
+        let bytes = std::fs::read(path).unwrap();
+        let rate = u32::from_le_bytes(bytes[24..28].try_into().unwrap());
+        let samples = bytes[44..]
+            .chunks_exact(2)
+            .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])) / 32768.0)
+            .collect();
+        (rate, samples)
+    }
+
+    /// Normalised autocorrelation peak over voice pitch lags (70-400 Hz).
+    fn pitch_strength(window: &[f32]) -> f32 {
+        let energy: f32 = window.iter().map(|s| s * s).sum();
+        if energy < 1e-9 {
+            return 0.0;
+        }
+        (120..686)
+            .map(|lag| {
+                let cross: f32 = window[lag..].iter().zip(window).map(|(a, b)| a * b).sum();
+                let e1: f32 = window[lag..].iter().map(|s| s * s).sum();
+                let e2: f32 = window[..window.len() - lag].iter().map(|s| s * s).sum();
+                cross / (e1 * e2).sqrt().max(1e-12)
+            })
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    #[ignore = "analyses a recording named by HANGTIME_WAV"]
+    fn analyze_wav() {
+        let path = std::env::var("HANGTIME_WAV").expect("set HANGTIME_WAV");
+        let (rate, raw) = read_wav(&path);
+        let mut audio = Vec::new();
+        Resampler::new(rate, SAMPLE_RATE).process(&raw, &mut audio);
+        let mut probe = VoxProbe::new(crate::vox::VOX_SENSITIVITY_DEFAULT);
+        let reports = probe.push(&audio);
+        println!("  time   level  crest  pitch  speech");
+        let window = 12_000; // 0.25 s
+        for (i, chunk) in audio.chunks_exact(window).enumerate() {
+            let rms = (chunk.iter().map(|s| s * s).sum::<f32>() / window as f32).sqrt();
+            let peak = chunk.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            // Pitch on the loudest 40 ms in the window.
+            let loudest = chunk
+                .chunks_exact(1920)
+                .max_by(|a, b| {
+                    let ea: f32 = a.iter().map(|s| s * s).sum();
+                    let eb: f32 = b.iter().map(|s| s * s).sum();
+                    ea.total_cmp(&eb)
+                })
+                .unwrap();
+            let frames = &reports[i * 12..(i * 12 + 12).min(reports.len())];
+            let speech = frames.iter().map(|r| r.speech).fold(0.0, f32::max);
+            println!(
+                "  {:4.2}  {:5.1}  {:5.1}  {:5.2}  {:5.2}",
+                i as f32 * 0.25,
+                20.0 * rms.max(1e-9).log10(),
+                peak / rms.max(1e-9),
+                pitch_strength(loudest),
+                speech
+            );
+        }
+    }
+}
