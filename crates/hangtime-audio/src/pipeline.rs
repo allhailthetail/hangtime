@@ -13,6 +13,7 @@ use rtrb::{Consumer, Producer};
 use crate::codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
 use crate::jitter::{JitterBuffer, Playout};
 use crate::resample::Resampler;
+use crate::tones::Tone;
 use crate::{AudioError, FRAME_DURATION, FRAME_SAMPLES, SAMPLE_RATE};
 
 /// How often the transmit thread drains the capture ring while keyed.
@@ -241,8 +242,31 @@ impl StatsAccumulator {
 /// Plays received voice datagrams. Blocks while nothing is being
 /// received; ticks every 20 ms only during a transmission.
 pub struct Receiver {
-    inbox: mpsc::Sender<Vec<u8>>,
+    inbox: Inbox,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Input to the receive thread.
+enum RxInput {
+    Datagram(Vec<u8>),
+    Tone(Tone),
+}
+
+/// Hands voice datagrams and tones to the receive thread. Cheap to clone.
+#[derive(Clone)]
+pub struct Inbox(mpsc::Sender<RxInput>);
+
+impl Inbox {
+    /// Queues a received voice datagram. Returns false once the receive
+    /// thread has stopped.
+    pub fn datagram(&self, datagram: Vec<u8>) -> bool {
+        self.0.send(RxInput::Datagram(datagram)).is_ok()
+    }
+
+    /// Plays a tone, mixed over any voice that is playing.
+    pub fn tone(&self, tone: Tone) {
+        let _ = self.0.send(RxInput::Tone(tone));
+    }
 }
 
 impl Receiver {
@@ -253,9 +277,9 @@ impl Receiver {
         device_rate: u32,
         on_end: impl FnMut(ReceiveStats) + Send + 'static,
     ) -> Result<Self, AudioError> {
-        let (inbox, datagrams) = mpsc::channel();
+        let (inbox, inputs) = mpsc::channel();
         let mut worker = RxWorker {
-            datagrams,
+            inputs,
             playback,
             resampler: Resampler::new(SAMPLE_RATE, device_rate),
             jitter: JitterBuffer::new(JITTER_TARGET_FRAMES),
@@ -263,19 +287,21 @@ impl Receiver {
             device_rate,
             stats: StatsAccumulator::default(),
             on_end: Box::new(on_end),
+            pending_tone: Vec::new(),
+            out: Vec::new(),
         };
         let thread = thread::Builder::new()
             .name("hangtime-rx".into())
             .spawn(move || worker.run())
             .map_err(AudioError::Thread)?;
         Ok(Self {
-            inbox,
+            inbox: Inbox(inbox),
             thread: Some(thread),
         })
     }
 
-    /// Channel to hand received datagrams to the receive thread.
-    pub fn inbox(&self) -> mpsc::Sender<Vec<u8>> {
+    /// Handle for passing datagrams and tones to the receive thread.
+    pub fn inbox(&self) -> Inbox {
         self.inbox.clone()
     }
 }
@@ -289,7 +315,7 @@ impl Drop for Receiver {
 }
 
 struct RxWorker {
-    datagrams: mpsc::Receiver<Vec<u8>>,
+    inputs: mpsc::Receiver<RxInput>,
     playback: Producer<f32>,
     resampler: Resampler,
     jitter: JitterBuffer,
@@ -297,30 +323,44 @@ struct RxWorker {
     device_rate: u32,
     stats: StatsAccumulator,
     on_end: Box<dyn FnMut(ReceiveStats) + Send>,
+    /// Tone samples (48 kHz) waiting to be mixed into playing voice.
+    pending_tone: Vec<f32>,
+    /// Scratch buffer for resampled output.
+    out: Vec<f32>,
 }
 
 impl RxWorker {
     fn run(&mut self) {
         let mut next_tick: Option<Instant> = None;
         let mut pcm = [0f32; FRAME_SAMPLES];
-        let mut out = Vec::new();
         loop {
-            // None means the tick is due with no new datagram.
+            // None means the tick is due with no new input.
             let received = match next_tick {
-                None => match self.datagrams.recv() {
-                    Ok(datagram) => Some(datagram),
+                None => match self.inputs.recv() {
+                    Ok(input) => Some(input),
                     Err(_) => return,
                 },
                 Some(tick) => match self
-                    .datagrams
+                    .inputs
                     .recv_timeout(tick.saturating_duration_since(Instant::now()))
                 {
-                    Ok(datagram) => Some(datagram),
+                    Ok(input) => Some(input),
                     Err(RecvTimeoutError::Timeout) => None,
                     Err(RecvTimeoutError::Disconnected) => return,
                 },
             };
-            if let Some(Ok((header, payload))) = received.as_deref().map(VoiceHeader::decode) {
+            let datagram = match received {
+                Some(RxInput::Datagram(datagram)) => Some(datagram),
+                Some(RxInput::Tone(tone)) => {
+                    self.pending_tone.extend(tone.render());
+                    if next_tick.is_none() {
+                        self.flush_tone();
+                    }
+                    None
+                }
+                None => None,
+            };
+            if let Some(Ok((header, payload))) = datagram.as_deref().map(VoiceHeader::decode) {
                 self.jitter.push(&header, payload);
                 if self.jitter.is_current(&header) {
                     self.stats.on_datagram(&header);
@@ -343,8 +383,10 @@ impl RxWorker {
                         next_tick = None;
                         if let Some(stats) = self.stats.finish() {
                             (self.on_end)(stats);
+                            self.pending_tone.extend(Tone::Courtesy.render());
                         }
                         self.resampler.reset();
+                        self.flush_tone();
                         if let Ok(decoder) = VoiceDecoder::new() {
                             self.decoder = decoder;
                         }
@@ -356,12 +398,11 @@ impl RxWorker {
                     let queued =
                         Duration::from_secs_f64(queued as f64 / f64::from(self.device_rate));
                     self.stats.on_played(jitter_wait, queued);
-                    out.clear();
-                    self.resampler.process(&pcm, &mut out);
-                    for &sample in &out {
-                        // A full ring means playback is behind; drop.
-                        let _ = self.playback.push(sample);
+                    let mixed = self.pending_tone.len().min(FRAME_SAMPLES);
+                    for (sample, tone) in pcm.iter_mut().zip(self.pending_tone.drain(..mixed)) {
+                        *sample += tone;
                     }
+                    self.play(&pcm);
                 }
                 let now = Instant::now();
                 next_tick = Some(if now.duration_since(tick) > MAX_LATE {
@@ -371,6 +412,24 @@ impl RxWorker {
                 });
             }
         }
+    }
+
+    /// Resamples 48 kHz audio and queues it for playback.
+    fn play(&mut self, samples: &[f32]) {
+        self.out.clear();
+        self.resampler.process(samples, &mut self.out);
+        for &sample in &self.out {
+            // A full ring means playback is behind; drop.
+            let _ = self.playback.push(sample);
+        }
+    }
+
+    /// Plays any pending tone straight away. Only while no voice is
+    /// playing, since voice mixes tones in frame by frame.
+    fn flush_tone(&mut self) {
+        let tone = std::mem::take(&mut self.pending_tone);
+        self.play(&tone);
+        self.resampler.reset();
     }
 }
 
@@ -393,7 +452,7 @@ mod tests {
         let transmitter =
             Transmitter::spawn(capture, SAMPLE_RATE, 7, 0, move |datagram: Vec<u8>| {
                 let _ = sent_tx.send(datagram.clone());
-                let _ = inbox.send(datagram);
+                inbox.datagram(datagram);
             })
             .unwrap();
 
@@ -421,6 +480,15 @@ mod tests {
         let stats = stats_rx.try_recv().expect("no stats reported");
         assert_eq!(stats.sent as usize, sent.len() - 1);
         assert_eq!(stats.lost, 0);
+    }
+
+    #[test]
+    fn plays_tone_while_idle() {
+        let (playback, speaker) = RingBuffer::new(SAMPLE_RATE as usize);
+        let receiver = Receiver::spawn(playback, SAMPLE_RATE, |_| {}).unwrap();
+        receiver.inbox().tone(Tone::Bonk);
+        thread::sleep(Duration::from_millis(100));
+        assert_eq!(speaker.slots(), Tone::Bonk.render().len());
     }
 
     fn voice(sequence: u16, end_of_transmission: bool) -> VoiceHeader {

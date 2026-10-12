@@ -4,11 +4,11 @@ use std::error::Error;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use hangtime_audio::{
-    Capture, DeviceLatency, PACKETIZATION_DELAY, Playback, ReceiveStats, Receiver, Transmitter,
+    Capture, DeviceLatency, Inbox, PACKETIZATION_DELAY, Playback, ReceiveStats, Receiver,
+    Transmitter,
 };
 use hangtime_proto::{ALL_CALL, VoiceHeader};
 use hangtime_transport::{Node, Peer};
@@ -47,7 +47,7 @@ pub fn run(runtime: &Runtime, node: &Node, peer: Option<SocketAddr>) -> Result<(
         Transmitter::spawn(mic, capture.device_rate(), me, ALL_CALL, move |datagram| {
             tx_members.send_voice(datagram);
         })?;
-    let radio = Radio::new(me, transmitter, Arc::clone(&members));
+    let radio = Radio::new(me, transmitter, Arc::clone(&members), receiver.inbox());
     members.add(peer.clone());
     runtime.spawn(Arc::clone(&radio).run_timers());
     runtime.spawn(serve_peer(Arc::clone(&radio), peer, receiver.inbox()));
@@ -58,7 +58,7 @@ pub fn run(runtime: &Runtime, node: &Node, peer: Option<SocketAddr>) -> Result<(
 }
 
 /// Handles one peer's control messages and voice until it disconnects.
-async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Sender<Vec<u8>>) {
+async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Inbox) {
     let control = async {
         while let Ok(message) = peer.recv_control().await {
             radio.on_control(&peer, message);
@@ -69,7 +69,7 @@ async fn serve_peer(radio: Arc<Radio>, peer: Peer, inbox: Sender<Vec<u8>>) {
             let Ok((header, _)) = VoiceHeader::decode(&datagram) else {
                 continue;
             };
-            if radio.on_voice(&header) && inbox.send(datagram.to_vec()).is_err() {
+            if radio.on_voice(&header) && !inbox.datagram(datagram.to_vec()) {
                 return;
             }
         }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use hangtime_audio::Transmitter;
+use hangtime_audio::{Inbox, Tone, Transmitter};
 use hangtime_proto::{ALL_CALL, ControlMessage, VoiceHeader};
 use hangtime_session::{Floor, FloorConfig, FloorEvent, FloorState, KeyUpOutcome};
 use hangtime_transport::Peer;
@@ -92,13 +92,20 @@ pub struct Radio {
     floor: Mutex<Floor>,
     members: Arc<Members>,
     transmitter: Transmitter,
+    /// Plays tones through the receive thread.
+    tones: Inbox,
     next_transmission: AtomicU16,
     /// Wakes the timer task when the floor's next deadline may have moved.
     deadline_changed: Notify,
 }
 
 impl Radio {
-    pub fn new(me: u32, transmitter: Transmitter, members: Arc<Members>) -> Arc<Self> {
+    pub fn new(
+        me: u32,
+        transmitter: Transmitter,
+        members: Arc<Members>,
+        tones: Inbox,
+    ) -> Arc<Self> {
         // Start transmission IDs somewhere new each run, so receivers that
         // remember our last transmission don't ignore the first new one.
         let seed = SystemTime::now()
@@ -108,6 +115,7 @@ impl Radio {
             floor: Mutex::new(Floor::new(me, FloorConfig::default())),
             members,
             transmitter,
+            tones,
             next_transmission: AtomicU16::new(seed),
             deadline_changed: Notify::new(),
         })
@@ -121,11 +129,13 @@ impl Radio {
             let id = self.next_transmission.fetch_add(1, Ordering::Relaxed);
             if floor.request(id, now).is_ok() {
                 self.transmitter.key_up(id);
+                self.tones.tone(Tone::TalkPermit);
                 self.members.broadcast(&ControlMessage::KeyUp {
                     group_id: ALL_CALL,
                     transmission_id: id,
                 });
             } else {
+                self.tones.tone(Tone::Bonk);
                 ptt::set_status("[--] busy");
                 return;
             }
@@ -152,6 +162,7 @@ impl Radio {
             } => {
                 if floor.on_key_up(talker, transmission_id, now) == KeyUpOutcome::Preempted {
                     self.transmitter.key_down();
+                    self.tones.tone(Tone::Bonk);
                     ptt::notice("lost the floor to a simultaneous key-up");
                 }
             }
@@ -220,9 +231,11 @@ impl Radio {
                     group_id: ALL_CALL,
                     transmission_id,
                 });
+                self.tones.tone(Tone::Bonk);
                 ptt::notice("time-out: transmission ended");
             }
-            Some(FloorEvent::TalkerDropped { .. } | FloorEvent::HangEnded) | None => {}
+            Some(FloorEvent::HangEnded) => self.tones.tone(Tone::HangEnd),
+            Some(FloorEvent::TalkerDropped { .. }) | None => {}
         }
         self.show(&floor);
     }

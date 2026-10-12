@@ -11,13 +11,15 @@ mod device;
 mod jitter;
 mod pipeline;
 mod resample;
+mod tones;
 
 pub use codec::{MAX_PACKET, VoiceDecoder, VoiceEncoder};
 pub use device::{Capture, DeviceLatency, Playback};
 pub use hangtime_proto::FRAME_DURATION;
 pub use jitter::{JitterBuffer, Playout};
-pub use pipeline::{PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
+pub use pipeline::{Inbox, PACKETIZATION_DELAY, ReceiveStats, Receiver, Transmitter};
 pub use resample::Resampler;
+pub use tones::Tone;
 
 /// Internal sample rate.
 pub const SAMPLE_RATE: u32 = 48_000;
