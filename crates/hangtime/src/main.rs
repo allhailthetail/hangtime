@@ -11,6 +11,8 @@
 //! - `hangtime mic-test [--mic NAME]`: record the microphone and show what
 //!   VOX hears.
 //! - `hangtime devices`: list microphones and speakers.
+//! - `hangtime setup`: ask for name and headset, and rewrite the settings
+//!   file. Also runs on first start, when there is no settings file.
 
 use std::error::Error;
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -37,6 +39,7 @@ mod mic_test;
 mod parrot;
 mod ptt;
 mod radio;
+mod setup;
 mod talk;
 mod ui;
 
@@ -50,6 +53,8 @@ usage:
       record the microphone for 10 s and show what VOX hears
   hangtime devices
       list microphones and speakers (names for --mic and --speaker)
+  hangtime setup
+      choose your name and headset again (keeps the old settings as .bak)
   hangtime --version
 
 --mic and --speaker match a device name, or any name containing the text,
@@ -61,6 +66,7 @@ enum Mode {
     Parrot { lan: bool },
     MicTest,
     Devices,
+    Setup,
 }
 
 #[derive(Debug)]
@@ -83,7 +89,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     while let Some(arg) = args.next() {
         let mut value = |flag: &str| args.next().ok_or(format!("{flag} needs a value"));
         match arg.as_str() {
-            "parrot" | "mic-test" | "devices" if command.is_none() => command = Some(arg),
+            "parrot" | "mic-test" | "devices" | "setup" if command.is_none() => command = Some(arg),
             "--lan" => lan = true,
             "--port" => {
                 let text = value("--port")?;
@@ -132,7 +138,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             ])?;
             Mode::MicTest
         }
-        _ => {
+        Some(other) => {
             unused(&[
                 ("--peer", !peers.is_empty()),
                 ("--lan", lan),
@@ -141,7 +147,11 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
                 ("--mic", mic.is_some()),
                 ("--speaker", speaker.is_some()),
             ])?;
-            Mode::Devices
+            if other == "setup" {
+                Mode::Setup
+            } else {
+                Mode::Devices
+            }
         }
     };
     Ok(Args {
@@ -188,6 +198,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
             print_devices();
             Ok(())
         }
+        Mode::Setup => Ok(setup::run(&config_path(CONFIG_FILE)?)?),
         Mode::MicTest => {
             let config = load_config()?;
             let path = config_path(MIC_TEST_FILE)?;
@@ -298,10 +309,14 @@ fn move_files(old: &Path, new: &Path, files: &[&str]) {
     let _ = std::fs::remove_dir(old);
 }
 
+/// Loads the settings, running first-time setup if there are none.
 fn load_config() -> Result<config::Config, Box<dyn Error>> {
     let path = config_path(CONFIG_FILE)?;
+    if !path.exists() {
+        setup::run(&path)?;
+    }
     println!("settings {}", path.display());
-    Ok(config::load_or_create(&path)?)
+    Ok(config::load(&path)?)
 }
 
 fn print_devices() {

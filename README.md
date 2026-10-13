@@ -81,6 +81,7 @@ hangtime parrot --lan             # echo node, discoverable on the LAN
 hangtime devices                  # list microphones and speakers
 hangtime --mic "WH-1000XM4"       # use a specific microphone
 hangtime mic-test                 # calibrate VOX for your mic and room
+hangtime setup                    # choose your name and headset again
 ```
 
 `--mic` and `--speaker` (or `microphone` and `speaker` in
@@ -108,14 +109,16 @@ Talkgroups, your display name, VOX settings (`vox = true`,
 are set in `~/.config/hangtime/hangtime.toml`
 (`%USERPROFILE%\.config\hangtime` on Windows), next to your identity
 key. Files from older builds in `%APPDATA%\hangtime` move there on
-first run. A commented starter file is written on first run, with
-three example open groups between All Call and Parrot:
+first run. On first start (or `hangtime setup`) Hangtime asks for
+your name and has you connect your headset, then writes a commented
+starter file with Group A and B (open) and Group C (keyed) between All
+Call and Parrot:
 
 ```toml
 [[group]]
-name = "Ops"
-id = 100
-key = "a long shared passphrase"   # leave out for an open group
+name = "Group C"
+id = 300
+key = "testing-only-change-me"   # leave out for an open group
 ```
 
 Machines with the same group `id` and `key` share the group; without
@@ -123,12 +126,12 @@ the key a machine never receives that group's voice.
 
 ### Installing a release
 
-A release zip (`scripts\package.ps1` builds one; see
-[RELEASING.md](docs/RELEASING.md)) holds the exe and `install.cmd`,
-which installs for the current user: `%LOCALAPPDATA%\Programs\Hangtime`,
-PATH, Start menu, and a firewall rule when run as administrator.
-[QUICKSTART.md](docs/QUICKSTART.md) is the user-facing README in the
-zip.
+Each release has an MSI (`hangtime-<version>-x64.msi`): per machine,
+with Start menu shortcuts, `PATH`, and a firewall rule, and silent
+installs for Intune ([INTUNE.md](docs/INTUNE.md)). A portable zip has
+the same files without installing. `scripts\package.ps1` builds both;
+see [RELEASING.md](docs/RELEASING.md). The README.html they carry is
+generated from [QUICKSTART.md](docs/QUICKSTART.md) and the changelog.
 
 ### Trying it on two machines
 
@@ -149,7 +152,8 @@ Planned later: `hangtime --server` as a repeater, and a tray app.
 - [Architecture](docs/ARCHITECTURE.md)
 - [Wire protocol](docs/PROTOCOL.md) (draft)
 - [Decision records](docs/decisions/)
-- [Quick start](docs/QUICKSTART.md) for users, and [releasing](docs/RELEASING.md)
+- [Quick start](docs/QUICKSTART.md) for users, [releasing](docs/RELEASING.md),
+  and [deploying with Intune](docs/INTUNE.md)
 - [Changelog](CHANGELOG.md)
 
 ## License

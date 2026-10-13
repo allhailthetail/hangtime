@@ -1,8 +1,8 @@
 //! Settings file: `hangtime.toml` in the user's config folder.
 //!
 //! Holds the display name and talkgroups, including group keys, so it is
-//! a secret like the identity file. A commented starter file, with a few
-//! example groups, is written on first run.
+//! a secret like the identity file. First-run setup writes a commented
+//! starter file with default groups ([`starter`]).
 
 use std::collections::HashSet;
 use std::fs;
@@ -14,25 +14,41 @@ use hangtime_proto::ALL_CALL;
 use hangtime_session::Group;
 use serde::Deserialize;
 
-const STARTER: &str = r#"# Hangtime settings. Restart Hangtime after editing.
+/// What first-run setup fills in; everything else gets a default.
+#[derive(Debug, Default)]
+pub struct Defaults {
+    pub name: Option<String>,
+    pub microphone: Option<String>,
+    pub speaker: Option<String>,
+}
+
+/// The starter `hangtime.toml`: commented, with `defaults` filled in.
+pub fn starter(defaults: &Defaults) -> String {
+    let setting = |key: &str, value: &Option<String>, example: &str| match value {
+        Some(value) => format!("{key} = {}", quote(value)),
+        None => format!("# {key} = {}", quote(example)),
+    };
+    format!(
+        r#"# Hangtime settings. Restart Hangtime after editing, or run
+# "hangtime setup" to start over.
 #
 # Your talkgroups, as numbered on screen (press the number or TAB to pick):
 #
 #   0  All Call   built in: everyone on the network hears it
-#   1  Ops        \
-#   2  Social      >  the [[group]] entries below; edit, add, or remove
-#   3  Support    /
+#   1  Group A    \
+#   2  Group B     >  the [[group]] entries below; edit, add, or remove
+#   3  Group C    /
 #   4  Parrot     built in, always last: plays you back, never leaves
 #                 this machine. Use it to check your mic and speaker.
 
-# Name others see. Defaults to the computer name.
-# name = "Desk"
+# Name others see.
+{name}
 
 # Microphone and speaker, by name or part of a name (ignoring case). Run
 # "hangtime devices" to see the names. If one isn't available, Hangtime
 # uses the system default. --mic and --speaker override these.
-# microphone = "Headset"
-# speaker = "Headset"
+{microphone}
+{speaker}
 
 # Start with VOX on: talking keys the radio, no SPACE needed. Toggle with
 # V while running. Use a headset so the speaker doesn't set it off.
@@ -50,26 +66,41 @@ muted = []
 # Talkgroups. Everyone with the same id (and key, if set) shares a
 # group. Ids are any number from 1 to 4294967294.
 [[group]]
-name = "Ops"
+name = "Group A"
 id = 100
 
 [[group]]
-name = "Social"
+name = "Group B"
 id = 200
 
-[[group]]
-name = "Support"
-id = 300
-
 # A keyed group: only people with the same key can join or listen in.
-# The key is a shared passphrase; pick a long one and give it out
-# privately.
-#
-# [[group]]
-# name = "Leads"
-# id = 400
-# key = "replace with your own long passphrase"
-"#;
+# This key is a placeholder everyone gets; change it (and tell your
+# group the new one, privately) before relying on it.
+[[group]]
+name = "Group C"
+id = 300
+key = "testing-only-change-me"
+"#,
+        name = setting("name", &defaults.name, "Desk"),
+        microphone = setting("microphone", &defaults.microphone, "Headset"),
+        speaker = setting("speaker", &defaults.speaker, "Headset"),
+    )
+}
+
+/// A TOML basic string.
+fn quote(text: &str) -> String {
+    let mut quoted = String::from("\"");
+    for c in text.chars() {
+        match c {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            c if c.is_control() => quoted.push_str(&format!("\\u{:04X}", c as u32)),
+            c => quoted.push(c),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
 
 #[derive(Debug, Default)]
 pub struct Config {
@@ -107,20 +138,18 @@ struct GroupEntry {
     key: Option<String>,
 }
 
-/// Loads the settings file, writing a commented starter if it is missing.
-pub fn load_or_create(path: &Path) -> Result<Config, String> {
-    let text = match fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if let Some(parent) = path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-            let _ = fs::write(path, STARTER);
-            STARTER.to_string()
-        }
-        Err(e) => return Err(format!("{}: {e}", path.display())),
-    };
+/// Loads the settings file.
+pub fn load(path: &Path) -> Result<Config, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Writes a starter settings file, creating its folder.
+pub fn write_starter(path: &Path, defaults: &Defaults) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, starter(defaults))
 }
 
 fn parse(text: &str) -> Result<Config, String> {
@@ -185,15 +214,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starter_file_has_example_groups() {
-        let config = parse(STARTER).unwrap();
-        let names: Vec<_> = config.groups.iter().map(|g| g.name.as_str()).collect();
-        assert_eq!(names, ["Ops", "Social", "Support"]);
-        assert!(config.groups.iter().all(|g| g.key.is_none()));
+    fn starter_file_has_default_groups() {
+        let config = parse(&starter(&Defaults::default())).unwrap();
+        let groups: Vec<_> = config
+            .groups
+            .iter()
+            .map(|g| (g.name.as_str(), g.id, g.key.as_deref()))
+            .collect();
+        assert_eq!(
+            groups,
+            [
+                ("Group A", 100, None),
+                ("Group B", 200, None),
+                ("Group C", 300, Some("testing-only-change-me")),
+            ]
+        );
         assert_eq!(config.name, None);
+        assert_eq!(config.microphone, None);
         assert!(!config.vox);
         assert_eq!(config.vox_sensitivity, Some(3));
         assert!(config.muted.is_empty());
+    }
+
+    #[test]
+    fn starter_file_fills_in_setup_answers() {
+        let config = parse(&starter(&Defaults {
+            name: Some("Matt \"Desk\"".into()),
+            microphone: Some("Headset (WH-1000XM4)".into()),
+            speaker: Some("Headphones (WH-1000XM4)".into()),
+        }))
+        .unwrap();
+        assert_eq!(config.name.as_deref(), Some("Matt \"Desk\""));
+        assert_eq!(config.microphone.as_deref(), Some("Headset (WH-1000XM4)"));
+        assert_eq!(config.speaker.as_deref(), Some("Headphones (WH-1000XM4)"));
     }
 
     #[test]

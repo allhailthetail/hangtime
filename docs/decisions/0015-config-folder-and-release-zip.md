@@ -1,6 +1,7 @@
 # 0015: Config in ~/.config/hangtime; release as a zip with an installer
 
-- **Status:** Accepted
+- **Status:** Accepted; the zip-and-script installer is superseded by
+  [0016](0016-msi-installer-and-first-run-setup.md)
 - **Date:** 2026-10-12
 
 ## Context

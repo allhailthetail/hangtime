@@ -4,6 +4,23 @@ All notable changes to Hangtime. Versions follow
 [semantic versioning](https://semver.org); the wire protocol has its
 own version (ALPN `hangtime/2`, see `docs/PROTOCOL.md`).
 
+## 0.2.0 (unreleased)
+
+- **Windows installer (MSI).** Installs for everyone on the computer:
+  Start menu, `PATH`, and a firewall rule for private and work
+  networks. Silent installs work, so it can be deployed with Intune.
+  It ends by offering this README.
+- **First-start setup.** Hangtime asks for your name (suggesting your
+  first name from Windows) and has you connect your headset, then
+  picks its microphone and speaker. Run `hangtime setup` to redo it.
+- **New default talkgroups:** Group A and Group B (open) and Group C
+  (keyed with the placeholder `testing-only-change-me`; change it),
+  between All Call and Parrot.
+- **App icon** on the exe, Start menu, and installer, with version
+  details in the file's properties.
+- The portable zip no longer has an install script; use the MSI to
+  install.
+
 ## 0.1.0 (2026-10-12)
 
 First release, for Windows x64 on a shared network.

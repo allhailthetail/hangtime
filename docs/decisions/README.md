@@ -20,7 +20,8 @@ without writing a new ADR that supersedes the old one.
 | [0012](0012-scan-list-hear-selected.md) | Scan list monitors all groups, plays the selected one | Accepted |
 | [0013](0013-built-in-parrot-and-redial.md) | Built-in parrot and staying connected | Accepted |
 | [0014](0014-mute-instead-of-squelch.md) | Per-group mute instead of a squelch level | Accepted |
-| [0015](0015-config-folder-and-release-zip.md) | Config in ~/.config/hangtime; release as a zip with an installer | Accepted |
+| [0015](0015-config-folder-and-release-zip.md) | Config in ~/.config/hangtime; release as a zip with an installer | Installer superseded by 0016 |
+| [0016](0016-msi-installer-and-first-run-setup.md) | MSI installer, and setup in the app on first start | Accepted |
 
 To add a decision, copy [template.md](template.md),
 number it sequentially, and add it to the table above.

@@ -21,5 +21,11 @@ serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 toml = { version = "1", default-features = false, features = ["parse", "serde", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Security_Authentication_Identity"] }
+
+[build-dependencies]
+embed-resource = "3"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "test-util"] }

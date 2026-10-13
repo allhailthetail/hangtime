@@ -38,6 +38,10 @@ Cargo workspace (edition 2024); every crate lives in `crates/`.
 - `hangtime-session`: floor control and group membership proofs (no I/O).
 - `hangtime-discovery`: mDNS advertise and browse.
 
+Releases: `scripts/package.ps1` builds the MSI (`installer/`, WiX v5)
+and portable zip; steps in `docs/RELEASING.md`. App icons are in
+`icons/`.
+
 Later phases add crates for UI and server-only logic (`hangtime-server`)
 as they are needed, not before.
 

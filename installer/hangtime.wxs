@@ -1,0 +1,89 @@
+<!--
+  Hangtime MSI (WiX v5). Built by scripts\package.ps1, which passes the
+  -d variables below. Per-machine, so it installs silently for Intune
+  ("msiexec /i hangtime-<version>-x64.msi /qn"). Per-user settings are
+  not the installer's job: Hangtime runs its own setup on first start
+  (ADR-0016).
+
+  Never change the UpgradeCode: it is how a new version finds and
+  replaces the old one, and how Intune and Windows track the product.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util"
+     xmlns:fire="http://wixtoolset.org/schemas/v4/wxs/firewall">
+  <Package Name="Hangtime"
+           Manufacturer="Hangtime contributors"
+           Version="$(Version)"
+           UpgradeCode="0C57EC12-0879-4AF3-A526-25D48BCEEB62"
+           Scope="perMachine"
+           Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Hangtime is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Icons are taken from the exe, which embeds hangtime.ico; Windows
+         Installer requires the Id to end in .exe for advertised shortcuts. -->
+    <Icon Id="hangtime.exe" SourceFile="$(ExeFile)" />
+    <Property Id="ARPPRODUCTICON" Value="hangtime.exe" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/allhailthetail/hangtime" />
+    <Property Id="ARPCOMMENTS" Value="Push-to-talk voice between computers, like a two-way radio." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Hangtime" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="Product" Directory="INSTALLFOLDER">
+      <Component Id="Exe">
+        <File Id="HangtimeExe" Source="$(ExeFile)" Name="hangtime.exe" KeyPath="yes">
+          <fire:FirewallException Id="FirewallPrivate" Name="Hangtime (private)"
+                                  Protocol="udp" Scope="any" Profile="private" />
+          <fire:FirewallException Id="FirewallDomain" Name="Hangtime (domain)"
+                                  Protocol="udp" Scope="any" Profile="domain" />
+          <Shortcut Id="AppShortcut" Directory="ProgramMenuFolder" Name="Hangtime"
+                    Description="Push-to-talk radio" WorkingDirectory="INSTALLFOLDER"
+                    Icon="hangtime.exe" Advertise="yes" />
+        </File>
+        <!-- So "hangtime" works in any new terminal. -->
+        <Environment Id="Path" Name="PATH" Value="[INSTALLFOLDER]" Part="last"
+                     Action="set" System="yes" Permanent="no" />
+      </Component>
+      <!-- One component per document, each its own key path. -->
+      <File Id="Readme" Source="$(ReadmeFile)" Name="README.html" />
+      <File Source="$(DocsDir)\CHANGELOG.md" />
+      <File Source="$(DocsDir)\LICENSE-MIT" />
+      <File Source="$(DocsDir)\LICENSE-APACHE" />
+      <File Source="$(DocsDir)\THIRD-PARTY-NOTICES.txt" />
+      <!-- A document can't have an advertised shortcut, so this one needs
+           a per-user key path to satisfy Windows Installer (ICE43, ICE57). -->
+      <Component Id="ReadmeShortcut">
+        <Shortcut Id="ReadmeShortcut" Directory="ProgramMenuFolder" Name="Hangtime README"
+                  Description="Setting up and using Hangtime, and what's new"
+                  Target="[#Readme]" />
+        <RegistryValue Root="HKCU" Key="Software\Hangtime" Name="ReadmeShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main">
+      <ComponentGroupRef Id="Product" />
+    </Feature>
+
+    <!-- Interactive installs: license, progress, then offer the README. -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="$(LicenseRtf)" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(BannerBmp)" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(DialogBmp)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALTEXT"
+              Value="Start Hangtime from the Start menu. The first time, it asks for your name and helps you pick your headset." />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT"
+              Value="Open the README: how to use and adjust Hangtime, and what's new" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#Readme]" />
+    <CustomAction Id="OpenReadme" BinaryRef="Wix4UtilCA_X64" DllEntry="WixShellExec"
+                  Impersonate="yes" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="OpenReadme"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 and NOT Installed" />
+    </UI>
+  </Package>
+</Wix>
