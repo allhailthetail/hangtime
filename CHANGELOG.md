@@ -4,7 +4,7 @@ All notable changes to Hangtime. Versions follow
 [semantic versioning](https://semver.org); the wire protocol has its
 own version (ALPN `hangtime/2`, see `docs/PROTOCOL.md`).
 
-## 0.2.0 (unreleased)
+## 0.2.0 (2026-10-13)
 
 - **Windows installer (MSI).** Installs for everyone on the computer:
   Start menu, `PATH`, and a firewall rule for private and work
